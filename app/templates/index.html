@@ -15,7 +15,19 @@
             justify-content: center;
             align-items: center;
             padding: 20px;
+            position: relative;
         }
+        .logout-link {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #666;
+            text-decoration: none;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+        .logout-link:hover { color: #f87171; }
+        
         .container {
             width: 100%;
             max-width: 500px;
@@ -98,6 +110,8 @@
 </head>
 <body>
 
+<a href="/logout" class="logout-link">Logout ({{ user }})</a>
+
 <div class="container">
     <h1>S2S Lite</h1>
     
@@ -106,7 +120,6 @@
     </div>
 
     <form id="s2sForm" onsubmit="sendEvent(event)">
-        
         <div class="form-group">
             <label>Platform</label>
             <select id="platform" name="platform">
@@ -136,15 +149,22 @@
 </div>
 
 <script>
-    // 1. Load Events on Startup
     window.addEventListener('DOMContentLoaded', async () => {
-        // Restore ID
         const savedID = localStorage.getItem('s2s_lite_id');
         if(savedID) document.getElementById('device_id').value = savedID;
 
-        // Fetch Events
         try {
             const res = await fetch('/api/events');
+            // Wenn nicht eingeloggt, leitet der Server auf Login um oder sendet 401
+            if (res.redirected) {
+                window.location.href = res.url;
+                return;
+            }
+            if (res.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+
             const data = await res.json();
             const select = document.getElementById('event_name');
             select.innerHTML = '';
@@ -160,16 +180,14 @@
                 select.innerHTML = '<option>No events found</option>';
             }
         } catch(e) {
-            log("Error loading events", true);
+            console.error(e);
         }
     });
 
-    // Save ID on change
     document.getElementById('device_id').addEventListener('input', (e) => {
         localStorage.setItem('s2s_lite_id', e.target.value);
     });
 
-    // 2. Send Function
     async function sendEvent(e) {
         e.preventDefault();
         const btn = document.getElementById('submitBtn');
@@ -181,10 +199,13 @@
         const formData = new FormData(e.target);
 
         try {
-            const res = await fetch('/api/send', {
-                method: 'POST',
-                body: formData
-            });
+            const res = await fetch('/api/send', { method: 'POST', body: formData });
+            
+            if (res.status === 401 || res.redirected) {
+                window.location.href = '/login';
+                return;
+            }
+
             const data = await res.json();
             
             if(data.success) {
@@ -204,11 +225,8 @@
         const area = document.getElementById('logs');
         const div = document.createElement('div');
         div.className = 'log-entry ' + (isError ? 'error' : '');
-        
-        // Time stamp
         const time = new Date().toLocaleTimeString();
         div.textContent = `[${time}] ${msg}`;
-        
         area.insertBefore(div, area.firstChild);
     }
 </script>
