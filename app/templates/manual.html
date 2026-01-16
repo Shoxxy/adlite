@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lenusik SuSTool By Jeremy_su aka Desung aka King of ´Dschungarien</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(20, 20, 20, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 204, 0, 0.12);
+            border-radius: 12px;
+            padding: 24px 32px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        }
+
+        h1 {
+            color: #ffcc00;
+            font-size: 28px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+
+        .nav-links a {
+            color: #b0b0b0;
+            text-decoration: none;
+            margin-left: 24px;
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+            transition: all 0.3s;
+            padding: 8px 16px;
+            border-radius: 6px;
+        }
+
+        .nav-links a:hover {
+            color: #ffcc00;
+            background: rgba(255, 204, 0, 0.08);
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .panel {
+            background: rgba(20, 20, 20, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 204, 0, 0.12);
+            border-radius: 12px;
+            padding: 28px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        }
+
+        .panel-title {
+            color: #ffcc00;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 204, 0, 0.1);
+        }
+
+        .form-grid {
+            display: grid;
+            gap: 20px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            color: #b0b0b0;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            letter-spacing: 0.3px;
+        }
+
+        input, select {
+            padding: 12px 14px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 204, 0, 0.15);
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: rgba(255, 204, 0, 0.4);
+            background: rgba(0, 0, 0, 0.6);
+            box-shadow: 0 0 0 3px rgba(255, 204, 0, 0.08);
+        }
+
+        select option {
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 14px;
+            background: linear-gradient(135deg, #ffcc00 0%, #e6b800 100%);
+            border: none;
+            border-radius: 8px;
+            color: #000;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(255, 204, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn.loading {
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        .btn.loading::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 18px;
+            height: 18px;
+            margin: -9px 0 0 -9px;
+            border: 2px solid #000;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .terminal {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 204, 0, 0.12);
+            border-radius: 8px;
+            padding: 16px;
+            height: 500px;
+            overflow-y: auto;
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #4ade80;
+        }
+
+        .terminal::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .terminal::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 3px;
+        }
+
+        .terminal::-webkit-scrollbar-thumb {
+            background: rgba(255, 204, 0, 0.2);
+            border-radius: 3px;
+        }
+
+        .terminal::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 204, 0, 0.3);
+        }
+
+        .terminal div {
+            margin-bottom: 4px;
+        }
+
+        .error-text {
+            color: #f87171 !important;
+        }
+
+        .success-text {
+            color: #4ade80 !important;
+        }
+
+        .info-text {
+            color: #ffcc00 !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Lenusik SuSTool By Jeremy_su aka Desung aka King of ´Dschungarien</h1>
+            <div class="nav-links">
+                <a href="/">← Dashboard</a>
+                <a href="/logout">Logout</a>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="panel">
+                <div class="panel-title">Configuration</div>
+
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="plat">Platform</label>
+                        <select id="plat">
+                            <option value="android">Android</option>
+                            <option value="ios">iOS</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="devId">Device ID (GAID / IDFA)</label>
+                        <input type="text" id="devId" placeholder="Enter device ID">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="appSel">App Name</label>
+                        <select id="appSel" onchange="loadEvents()">
+                            <option value="">Select App...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="evtSel">Event Name</label>
+                        <select id="evtSel">
+                            <option value="">Select Event...</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn" onclick="send('single')">Send Single Event</button>
+                    <button class="btn" onclick="send('all')">Send All Events</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-title">Terminal Output</div>
+                <div class="terminal" id="terminal">
+                    <div class="info-text">System ready. Waiting for commands...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Load apps on page load and restore device ID from localStorage
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Restore saved device ID
+            const savedDeviceId = localStorage.getItem('s2s_device_id');
+            if(savedDeviceId) {
+                document.getElementById('devId').value = savedDeviceId;
+                log('> Restored saved Device ID', 'info');
+            }
+
+            await loadApps();
+            log('> System initialized.', 'info');
+        });
+
+        // Save device ID to localStorage when it changes
+        document.getElementById('devId').addEventListener('input', (e) => {
+            const deviceId = e.target.value;
+            if(deviceId) {
+                localStorage.setItem('s2s_device_id', deviceId);
+            }
+        });
+
+        async function loadApps() {
+            const appSel = document.getElementById('appSel');
+            const evtSel = document.getElementById('evtSel');
+
+            appSel.innerHTML = '<option value="">Loading...</option>';
+            evtSel.innerHTML = '<option value="">Select Event...</option>';
+
+            try {
+                const res = await fetch('/api/manual/apps');
+                if(res.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                const data = await res.json();
+                appSel.innerHTML = '<option value="">Select App...</option>';
+                data.apps.forEach(app => {
+                    const opt = document.createElement('option');
+                    opt.value = app;
+                    opt.textContent = app;
+                    appSel.appendChild(opt);
+                });
+                log(`> Loaded ${data.apps.length} apps`, 'info');
+            } catch(e) {
+                log('❌ Error loading apps: ' + e, 'error');
+                appSel.innerHTML = '<option value="">Error loading apps</option>';
+            }
+        }
+
+        async function loadEvents() {
+            const app = document.getElementById('appSel').value;
+            const evtSel = document.getElementById('evtSel');
+            evtSel.innerHTML = '<option value="">Loading events...</option>';
+
+            if(!app) {
+                evtSel.innerHTML = '<option value="">Select Event...</option>';
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/manual/events/${encodeURIComponent(app)}`);
+                if(res.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                const data = await res.json();
+                evtSel.innerHTML = '';
+
+                if(data.events.length === 0) {
+                    evtSel.add(new Option('No events found', ''));
+                } else {
+                    data.events.forEach(e => {
+                        const opt = document.createElement('option');
+                        opt.value = e;
+                        opt.textContent = e;
+                        evtSel.appendChild(opt);
+                    });
+                }
+                log(`> Loaded ${data.events.length} events for ${app}`, 'info');
+            } catch(e) {
+                evtSel.innerHTML = '<option value="">Error loading events</option>';
+                log('❌ Error loading events: ' + e, 'error');
+            }
+        }
+
+        async function send(mode) {
+            const plat = document.getElementById('plat').value;
+            const dev = document.getElementById('devId').value;
+            const app = document.getElementById('appSel').value;
+            const evt = document.getElementById('evtSel').value;
+            const btnGroup = document.querySelector('.btn-group');
+
+            // Validation
+            if(!dev) {
+                log('❌ Error: Device ID is required.', 'error');
+                return;
+            }
+            if(!app) {
+                log('❌ Error: Please select an app.', 'error');
+                return;
+            }
+            if(mode === 'single' && !evt) {
+                log('❌ Error: Please select an event.', 'error');
+                return;
+            }
+
+            // Set loading state
+            const buttons = btnGroup.querySelectorAll('.btn');
+            buttons.forEach(btn => btn.classList.add('loading'));
+
+            log(`\n> Sending request (${mode.toUpperCase()})...`, 'info');
+            log(`> Platform: ${plat}`, 'info');
+            log(`> Device ID: ${dev}`, 'info');
+            log(`> App: ${app}`, 'info');
+            if(mode === 'single') log(`> Event: ${evt}`, 'info');
+
+            const formData = new FormData();
+            formData.append('mode', mode);
+            formData.append('platform', plat);
+            formData.append('device_id', dev);
+            formData.append('app_name', app);
+            if(mode === 'single') formData.append('event_name', evt);
+
+            try {
+                const res = await fetch('/api/manual/send', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if(res.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+
+                const data = await res.json();
+
+                if(data.success) {
+                    data.logs.forEach(l => log(l, 'success'));
+                    log('> ✓ COMPLETED SUCCESSFULLY.', 'success');
+                } else {
+                    log(`❌ Error: ${data.log}`, 'error');
+                }
+            } catch(e) {
+                log(`❌ Network error: ${e}`, 'error');
+            } finally {
+                buttons.forEach(btn => btn.classList.remove('loading'));
+            }
+        }
+
+        function log(msg, type = 'normal') {
+            const terminal = document.getElementById('terminal');
+            const div = document.createElement('div');
+            div.textContent = msg;
+
+            if(type === 'success') {
+                div.className = 'success-text';
+            } else if(type === 'error') {
+                div.className = 'error-text';
+            } else if(type === 'info') {
+                div.className = 'info-text';
+            }
+
+            terminal.appendChild(div);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+    </script>
+</body>
+</html>
