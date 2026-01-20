@@ -2,32 +2,63 @@ import time
 import random
 import requests
 import datetime
+import sqlite3
+import threading
 from urllib.parse import quote
 
-# --- USER AGENT MANAGEMENT ---
+# --- USER AGENT MANAGEMENT MIT DATENBANK ---
 class UserAgentManager:
     def __init__(self):
-        # Speicher: device_id -> user_agent
-        self.storage = {}
+        # Wir nutzen SQLite für dauerhafte Speicherung
+        self.db_path = "user_agents.db"
+        self._init_db()
+        # Lock für Thread-Sicherheit bei Datenbank-Zugriffen
+        self.lock = threading.Lock()
         
+    def _init_db(self):
+        """Erstellt die Tabelle, falls sie noch nicht existiert"""
+        with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS agents (
+                    device_id TEXT PRIMARY KEY,
+                    user_agent TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+
     def get_or_create(self, device_id, platform, browser=None, model=None, os_ver=None, use_random=False):
-        # 1. Existiert bereits ein UA für dieses Gerät?
-        if device_id in self.storage:
-            return self.storage[device_id]
-        
-        # 2. Generierung
-        ua = ""
-        platform = platform.lower()
-        
-        # Falls Random gewünscht oder keine spezifischen Angaben
-        if use_random or (not browser and not model):
-            ua = self._generate_random(platform)
-        else:
-            ua = self._construct_specific(platform, browser, model, os_ver)
-            
-        # 3. Speichern
-        self.storage[device_id] = ua
-        return ua
+        """
+        Lädt UA aus DB oder erstellt neuen und speichert ihn.
+        Returns: (user_agent_string, is_from_cache_bool)
+        """
+        with self.lock: # Verhindert Datenbank-Konflikte bei vielen Zugriffen
+            with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                
+                # 1. PRÜFEN: Gibt es die ID schon in der DB?
+                cursor.execute("SELECT user_agent FROM agents WHERE device_id = ?", (device_id,))
+                row = cursor.fetchone()
+                
+                if row:
+                    # JA -> Zurückgeben (FIXIERT)
+                    return row[0], True
+                
+                # 2. NEIN -> Generieren
+                platform = platform.lower()
+                ua = ""
+                
+                if use_random or (not browser and not model):
+                    ua = self._generate_random(platform)
+                else:
+                    ua = self._construct_specific(platform, browser, model, os_ver)
+                
+                # 3. SPEICHERN -> In DB schreiben
+                cursor.execute("INSERT INTO agents (device_id, user_agent) VALUES (?, ?)", (device_id, ua))
+                conn.commit()
+                
+                return ua, False
 
     def _generate_random(self, platform):
         """Erstellt aktuelle Random UAs (IMMER DEUTSCH)"""
@@ -35,7 +66,6 @@ class UserAgentManager:
             # High-End Androids
             models = ["SM-S918B", "Pixel 8 Pro", "2308CPXD0C", "SM-A546B"]
             model = random.choice(models)
-            # Android 14 ist Standard für 'Aktuell'
             return f"Mozilla/5.0 (Linux; Android 14; {model}; de-DE) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36"
         else:
             # iOS 17.3
@@ -44,18 +74,12 @@ class UserAgentManager:
     def _construct_specific(self, platform, browser, model, os_ver):
         """Baut UA aus User-Eingaben mit neuesten Versionen und DE Locale"""
         
-        # --- DEFAULTS & CLEANUP ---
         browser = browser.lower() if browser else ("chrome" if platform == "android" else "safari")
-        # Standardmodelle falls leer
         model = model or ("SM-S918B" if platform == "android" else "iPhone15,3") 
-        # OS Version Cleanup (z.B. "13" -> "13")
         os_ver = os_ver or ("14" if platform == "android" else "17.3")
         
-        # --- ANDROID CONSTRUCTION ---
         if platform == "android":
-            # Basis-String immer mit de-DE
             base_platform = f"Linux; Android {os_ver}; {model}; de-DE"
-            
             if "firefox" in browser:
                 return f"Mozilla/5.0 ({base_platform}; rv:122.0) Gecko/122.0 Firefox/122.0"
             elif "opera" in browser:
@@ -63,18 +87,11 @@ class UserAgentManager:
             elif "edge" in browser:
                 return f"Mozilla/5.0 ({base_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.210 Mobile Safari/537.36 EdgA/120.0.2210.141"
             elif "brave" in browser:
-                return f"Mozilla/5.0 ({base_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36" # Brave tarnt sich als Chrome
-            else: # Chrome (Default)
                 return f"Mozilla/5.0 ({base_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36"
-
-        # --- IOS CONSTRUCTION ---
+            else: 
+                return f"Mozilla/5.0 ({base_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36"
         else:
-            # iOS Version Formatierung (17.3 -> 17_3)
             os_ver_ua = os_ver.replace(".", "_")
-            
-            # Basis iPhone String
-            # Hinweis: iOS UAs enthalten selten Locale direkt im Plattform-String, 
-            # aber moderne Engines übernehmen das aus dem System. Wir halten es Standard-Konform.
             base_platform = f"iPhone; CPU iPhone OS {os_ver_ua} like Mac OS X"
             
             if "chrome" in browser:
@@ -86,14 +103,14 @@ class UserAgentManager:
             elif "edge" in browser:
                 return f"Mozilla/5.0 ({base_platform}) AppleWebKit/605.1.15 (KHTML, like Gecko) EdgiOS/120.0.2210.126 Version/17.0 Mobile/15E148 Safari/605.1.15"
             elif "brave" in browser:
-                return f"Mozilla/5.0 ({base_platform}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1" # Brave iOS nutzt WebKit
-            else: # Safari (Default)
+                return f"Mozilla/5.0 ({base_platform}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1"
+            else: 
                 return f"Mozilla/5.0 ({base_platform}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1"
 
 # Singleton Instanz
 ua_manager = UserAgentManager()
 
-# --- REQUEST LOGIC (Unverändert, aber nötig für Imports) ---
+# --- REQUEST LOGIC ---
 GLOBAL_SESSION = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
 GLOBAL_SESSION.mount('https://', adapter)
@@ -119,7 +136,6 @@ def send_request_auto_detect(url, platform, use_get, skadn=None, user_agent=None
     headers = {}
     if user_agent:
         headers["User-Agent"] = user_agent
-        # Optional: Accept-Language Header für noch mehr Authentizität
         headers["Accept-Language"] = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
     
     try:

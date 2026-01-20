@@ -1,4 +1,3 @@
-# app/main.py - ZONE C
 import os
 import json
 import logging
@@ -18,17 +17,30 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 HOSTNAME = socket.gethostname()
 logging.basicConfig(level=logging.INFO)
 
-def send_detailed_log(status_type, context, response_text, user_agent):
+def send_detailed_log(status_type, context, response_text, user_agent, is_fixed_ua):
     if not DISCORD_WEBHOOK_URL: return
     color = "39ff14" if status_type == "success" else "ff3333"
     if status_type == "warning": color = "ffaa00"
+    
     webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-    embed = DiscordEmbed(title=f"INJECTION {status_type.upper()}", color=color)
+    
+    # DB Status im Titel
+    db_status = "(DB LOCKED)" if is_fixed_ua else "(NEW RECORD)"
+    embed = DiscordEmbed(title=f"INJECTION {status_type.upper()} {db_status}", color=color)
+    
     embed.set_author(name=f"OPERATOR: {context.get('username', 'Unknown').upper()}")
     embed.add_embed_field(name="Target", value=f"`{context['app_name']}` ({context['platform'].upper()})", inline=True)
     embed.add_embed_field(name="Event", value=f"**{context['event_name']}**", inline=True)
     embed.add_embed_field(name="Device ID", value=f"`{context['device_id']}`", inline=False)
-    embed.add_embed_field(name="UA Spoof", value=f"```\n{user_agent}\n```", inline=False)
+    
+    # UA Info
+    ua_source = "🔒 LOADED FROM DATABASE (Persistent)" if is_fixed_ua else "💾 CREATED & SAVED TO DB"
+    embed.add_embed_field(name="Agent Status", value=ua_source, inline=False)
+    embed.add_embed_field(name="User Agent", value=f"```\n{user_agent}\n```", inline=False)
+    
+    clean_resp = response_text.replace("```", "")[:600]
+    embed.add_embed_field(name="Engine Response", value=f"```json\n{clean_resp}\n```", inline=False)
+    
     webhook.add_embed(embed)
     try: webhook.execute()
     except: pass
@@ -66,7 +78,8 @@ async def internal_execute(
 ):
     if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
 
-    final_ua = ua_manager.get_or_create(device_id, platform, pro_browser, pro_model, pro_os_ver, use_random_ua)
+    # UA abrufen (Gibt zurück: UA String + Boolean ob aus DB geladen)
+    final_ua, is_cached = ua_manager.get_or_create(device_id, platform, pro_browser, pro_model, pro_os_ver, use_random_ua)
     
     data = load_app_data()
     if app_name not in data: return {"status": "error", "message": "App Missing"}
@@ -86,7 +99,7 @@ async def internal_execute(
         if "ignoring event" in raw_l: status="warning"; msg="Duplicate"
         elif "success" in raw_l or "ok" in raw_l: status="success"; msg="Success"
         
-        send_detailed_log(status, {"username":username, "app_name":app_name, "platform":platform, "device_id":device_id, "event_name":event_name}, raw, final_ua)
+        send_detailed_log(status, {"username":username, "app_name":app_name, "platform":platform, "device_id":device_id, "event_name":event_name}, raw, final_ua, is_cached)
         return {"status": status, "message": msg}
     except Exception as e:
         return {"status": "error", "message": "Crash"}
