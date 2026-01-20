@@ -32,26 +32,38 @@ def send_detailed_log(status_type, context, response_text, user_agent, is_fixed_
     if not DISCORD_WEBHOOK_URL: return
     color = "39ff14" if status_type == "success" else "ff3333"
     if status_type == "warning": color = "ffaa00"
-    
+    if status_type == "error": color = "ff0000"
+
     try:
         webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-        db_status = "(LOCKED)" if is_fixed_ua else "(NEW/UPDATED)"
+        
+        # Titel Status
+        db_status = "(LOCKED)" if is_fixed_ua else "(NEW / OVERRIDE)"
         
         embed = DiscordEmbed(title=f"INJECTION {status_type.upper()} {db_status}", color=color)
         embed.set_author(name=f"OPERATOR: {context.get('username', 'Unknown').upper()}")
+        
         embed.add_embed_field(name="Target", value=f"`{context['app_name']}` ({context['platform'].upper()})", inline=True)
+        embed.add_embed_field(name="Event", value=f"**{context['event_name']}**", inline=True)
         embed.add_embed_field(name="Device ID", value=f"`{context['device_id']}`", inline=False)
         
-        ua_status = "🔒 PERSISTENT" if is_fixed_ua else "♻️ GENERATED"
-        embed.add_embed_field(name="UA Strategy", value=ua_status, inline=True)
-        embed.add_embed_field(name="User Agent", value=f"```\n{user_agent}\n```", inline=False)
+        # UA Info
+        if is_fixed_ua:
+            ua_source = "🔒 DB CACHE (Standard Mode)"
+        else:
+            # Checken ob es ein manueller Override war (Indirekt)
+            ua_source = "✨ MANUAL OVERRIDE / FORCE UPDATE"
+
+        embed.add_embed_field(name="UA Strategy", value=ua_source, inline=True)
+        embed.add_embed_field(name="User Agent Used", value=f"```\n{user_agent}\n```", inline=False)
         
         clean_resp = str(response_text).replace("```", "")[:600]
-        embed.add_embed_field(name="Response", value=f"```json\n{clean_resp}\n```", inline=False)
+        embed.add_embed_field(name="Engine Response", value=f"```json\n{clean_resp}\n```", inline=False)
         
         webhook.add_embed(embed)
         webhook.execute()
-    except: pass
+    except Exception as e:
+        logging.error(f"Discord Log Error: {e}")
 
 def load_app_data():
     for path in ["app/data_android.json", "data_android.json", "../data_android.json"]:
@@ -82,7 +94,7 @@ async def internal_execute(
     force_ua_update: bool = Form(False),
     x_api_key: str = Header(None)
 ):
-    # Safe Defaults für Crash Handling
+    # Crash-Safe Init
     final_ua = "N/A"
     is_cached = False
     log_ctx = {"username":username, "app_name":app_name, "platform":platform, "device_id":device_id, "event_name":event_name}
@@ -90,7 +102,7 @@ async def internal_execute(
     try:
         if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
 
-        # 1. UA Holen (logic.py fängt jetzt DB Fehler ab!)
+        # 1. UA Holen (Mit Override Priorität)
         final_ua, is_cached = ua_manager.get_or_create(
             device_id=device_id,
             platform=platform,
@@ -118,6 +130,7 @@ async def internal_execute(
         if "ignoring event" in raw_l: status="warning"; msg="Duplicate"
         elif "request doesn't contain device identifiers" in raw_l: status="error"; msg="Invalid ID"
         elif "success" in raw_l or "ok" in raw_l: status="success"; msg="Success"
+        else: status="error"; msg=f"Server: {raw[:40]}"
         
         send_detailed_log(status, log_ctx, raw, final_ua, is_cached)
         return {"status": status, "message": msg}
@@ -125,6 +138,5 @@ async def internal_execute(
     except Exception as e:
         err = traceback.format_exc()
         logging.error(f"ENGINE CRASH: {err}")
-        # Wir senden einen Fallback-Log, damit man den Fehler sieht
         send_detailed_log("error", log_ctx, f"CRASH: {str(e)}", final_ua, is_cached)
         return JSONResponse({"status": "error", "message": "Engine Error"})
