@@ -5,5 +5,5 @@ requests
 python-multipart
 itsdangerous
 psutil
-gunicorn
-starlette
+httpx
+discord-webhook
