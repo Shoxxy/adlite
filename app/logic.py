@@ -6,11 +6,10 @@ import sqlite3
 import threading
 import os
 import traceback
+import json # WICHTIG FÜR PARTNER PARAMS
 from urllib.parse import urlparse, parse_qs, urlencode
 
-# ---------------------------------------------------------
-# 1. USER AGENT MANAGER (Unverändert)
-# ---------------------------------------------------------
+# --- UA MANAGER (Bleibt gleich) ---
 class UserAgentManager:
     def __init__(self):
         self.db_path = "/tmp/user_agents.db"
@@ -61,9 +60,7 @@ class UserAgentManager:
 
 ua_manager = UserAgentManager()
 
-# ---------------------------------------------------------
-# 2. NETWORK
-# ---------------------------------------------------------
+# --- NETWORK ---
 GLOBAL_SESSION = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
 GLOBAL_SESSION.mount('https://', adapter)
@@ -86,9 +83,7 @@ class AutoProxyEngine:
         return []
 proxy_engine = AutoProxyEngine()
 
-# ---------------------------------------------------------
-# 3. CORE LOGIC (HYBRID PARAMETERS)
-# ---------------------------------------------------------
+# --- LOGIC (SMART ID FIX) ---
 def extract_id_and_platform_from_link(link):
     if not link or "adjust" not in link: return None, None
     try:
@@ -100,18 +95,18 @@ def extract_id_and_platform_from_link(link):
     return None, None
 
 def generate_adjust_params(event_token, app_token, device_id, platform, skadn=None, tracker_link=None):
-    # Basis URL
     base_url = "https://app.adjust.com/event"
     
-    # 1. URL Params (Tokens kommen IMMER hier rein, damit Adjust sie findet)
+    # Standard URL Params
     url_params = {
+        "s2s": "1", # ZWINGEND FÜR TRACKING
         "event_token": event_token,
-        "app_token": app_token
+        "app_token": app_token,
+        "environment": "production"
     }
     
-    # 2. Body Params (Der Rest kommt hier rein)
+    # Body Params
     body_params = {}
-    
     if platform == "android":
         body_params["gps_adid"] = device_id
         body_params["adid"] = device_id
@@ -121,24 +116,64 @@ def generate_adjust_params(event_token, app_token, device_id, platform, skadn=No
 
     extracted_ip = None
     has_referrer = False
+    
+    # --- NEU: PARTNER PARAMS CONTAINER ---
+    # Hier sammeln wir ALLES aus dem Link, um es als JSON an Adjust zu geben.
+    # Das ist der Weg, wie Offerwalls ihre Daten zurückbekommen.
+    partner_params_dict = {}
+
+    # --- NEU: ID DETECTION ---
+    # Wir suchen nach diesen Keys, um sie als "callback_id" zu erzwingen
+    potential_id_keys = ["click_id", "clickid", "trans_id", "transaction_id", "sub_id", "aff_sub", "oid", "uid"]
+    found_callback_id = None
 
     if tracker_link and "adjust" in tracker_link:
         try:
             parsed = urlparse(tracker_link)
             query_params = parse_qs(parsed.query)
-            blocked_keys = ["gps_adid", "adid", "idfa", "app_token", "skadn", "s2s", "event_token"]
+            blocked_keys = ["gps_adid", "adid", "idfa", "app_token", "skadn", "s2s", "event_token", "environment"]
             
             for key, val_list in query_params.items():
                 val = val_list[0]
+                
+                # 1. Sammeln für Partner Params (WICHTIG!)
+                if key not in blocked_keys:
+                    partner_params_dict[key] = val
+
+                # 2. Suche nach der "Money ID"
+                if not found_callback_id and any(pid in key.lower() for pid in potential_id_keys):
+                    found_callback_id = val # TREFFER! Das ist unsere ID.
+
+                # 3. Referrer & IP Logik wie gehabt
                 if key == "referrer": body_params["install_referrer"] = val; has_referrer = True; continue
                 if key in ["ip", "device_ip", "user_ip", "ip_address"]: extracted_ip = val; body_params["ip_address"] = val; continue
+                
+                # 4. Alles andere durchreichen
                 if key not in blocked_keys: body_params[key] = val
         except: pass
-        
+    
+    # --- FINALE ID LOGIK ---
+    if found_callback_id:
+        # Wir haben die echte ID aus dem Link gefunden!
+        url_params["callback_id"] = found_callback_id
+        # Wir setzen sie auch als "click_id", falls Adjust das lieber mag
+        if "click_id" not in body_params: body_params["click_id"] = found_callback_id
+    else:
+        # Notlösung: Zeitstempel (damit zumindest das Event durchgeht)
+        url_params["callback_id"] = f"{int(time.time())}_{random.randint(1000,9999)}"
+
+    # --- FINALE PARTNER PARAMS LOGIK ---
+    # Wir codieren die gesammelten Link-Daten als JSON und hängen sie an
+    if partner_params_dict:
+        url_params["partner_params"] = json.dumps(partner_params_dict)
+        # Manchmal auch callback_params genannt
+        url_params["callback_params"] = json.dumps(partner_params_dict)
+
+    # Time Travel
     if has_referrer and platform == "android":
         now = int(time.time())
-        body_params["referrer_click_timestamp_seconds"] = str(now - random.randint(45, 120))
-        body_params["install_begin_timestamp_seconds"] = str(now - random.randint(5, 30))
+        body_params["referrer_click_timestamp_seconds"] = str(now - random.randint(60, 180))
+        body_params["install_begin_timestamp_seconds"] = str(now - random.randint(10, 40))
 
     return base_url, url_params, body_params, extracted_ip
 
@@ -168,29 +203,21 @@ def send_request_auto_detect(base_url, url_params, body_params, use_get, user_ag
         current_proxies = {"http": proxy, "https": proxy} if proxy else None
         p_name = proxy if proxy else "Direct"
         try:
-            # HYBRID MODE:
-            # URL bekommt url_params (app_token, event_token)
-            # Body bekommt body_params (ids, referrer, etc)
-            
             if use_get:
-                # Bei GET kommt ALLES in die URL (Mergen)
                 full_params = {**url_params, **body_params}
                 r = GLOBAL_SESSION.get(base_url, params=full_params, headers=headers, timeout=10, proxies=current_proxies)
             else:
-                # Bei POST: Tokens in URL, Rest in Body
                 r = GLOBAL_SESSION.post(base_url, params=url_params, data=body_params, headers=headers, timeout=10, proxies=current_proxies)
             
-            # Response analysieren
-            resp_str = r.text
             status = r.status_code
+            resp_text = r.text
             
-            # Check Status Code: 200 ist immer ein Sieg
             if status == 200:
-                if not resp_str or resp_str == "{}": 
-                    return f"Status {status}: OK (Empty Response) (via {p_name})"
-                return f"Status {status}: {resp_str} (via {p_name})"
+                msg = f"OK (Via {p_name})"
+                if resp_text and resp_text != "{}": msg += f" | {resp_text}"
+                return f"Status {status}: {msg}"
             
-            return f"Status {status}: {resp_str} (via {p_name})"
+            return f"Status {status}: {resp_text} (via {p_name})"
             
         except Exception as e:
             last_error = str(e)
