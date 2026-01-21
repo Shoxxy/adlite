@@ -14,10 +14,6 @@ from urllib.parse import urlparse, parse_qs, unquote
 # 1. HELPER: UUID GENERATOR
 # ---------------------------------------------------------
 def generate_android_uuid(device_id):
-    """
-    Erstellt eine persistente Android UUID basierend auf der Device ID.
-    Format: a700dc2f-365e-4b5c-adb3-3be73057e947
-    """
     hash_obj = hashlib.md5(device_id.encode())
     guid = uuid.UUID(hash_obj.hexdigest())
     return str(guid)
@@ -55,7 +51,17 @@ def get_proxy_dict(manual_proxy=None, use_auto_proxy=False):
     return None
 
 # ---------------------------------------------------------
-# 3. UA MANAGER (DB)
+# 3. SKADN CONFIG (Das fehlte!)
+# ---------------------------------------------------------
+SKADN_APP_CONFIGS = {"TikTok": 8, "Snapchat": 12, "Facebook": 16, "Google": 20, "Unity": 24}
+
+def get_skadn_value_for_app(app_name):
+    for k, v in SKADN_APP_CONFIGS.items(): 
+        if k.lower() in app_name.lower(): return v
+    return 8
+
+# ---------------------------------------------------------
+# 4. UA MANAGER (DB)
 # ---------------------------------------------------------
 class UserAgentManager:
     def __init__(self):
@@ -96,19 +102,13 @@ def extract_id_and_platform_from_link(link):
     return None, None
 
 # ---------------------------------------------------------
-# 4. BLUEPRINT: POCO M7 Pro 5G (Android 15)
+# 5. BLUEPRINT: POCO M7 Pro 5G (Android 15)
 # ---------------------------------------------------------
 def get_poco_blueprint(device_id, app_token, event_token, android_uuid):
-    """
-    Erstellt das EXAKTE Profil eines POCO M7 Pro 5G auf Android 15.
-    """
-    # Zeitstempel generieren (ISO 8601 mit Offset, wie im Log)
     now = datetime.datetime.now(datetime.timezone.utc)
-    # Simuliere Install vor 2 Minuten, Event jetzt
     install_time = (now - datetime.timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
     current_time = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
     
-    # BASIS DATEN (An das echte POCO M7 Pro 5G angepasst)
     data = {
         "app_token": app_token,
         "event_token": event_token,
@@ -116,36 +116,36 @@ def get_poco_blueprint(device_id, app_token, event_token, android_uuid):
         "android_uuid": android_uuid,
         
         # Device Specs: POCO M7 Pro 5G (Model: 2409FPCC4G)
-        "device_name": "2409FPCC4G",     # Das ist die technische Modellnummer
+        "device_name": "2409FPCC4G",
         "device_type": "phone",
-        "device_manufacturer": "Xiaomi", # POCO ist eine Xiaomi Marke
-        "hardware_name": "2409FPCC4G",   # Oft identisch mit device_name in Logs
+        "device_manufacturer": "Xiaomi",
+        "hardware_name": "2409FPCC4G",
         
-        # Display: 1080 x 2400 pixels, 20:9 ratio (~395 ppi density)
+        # Display
         "display_width": "2400",
         "display_height": "1080",
-        "screen_size": "large",      # 6.67 inches ist large
+        "screen_size": "large",
         "screen_format": "long",
-        "screen_density": "xxhdpi",  # ~400dpi wird meist als xxhdpi klassifiziert
+        "screen_density": "xxhdpi",
         
-        # CPU/Architektur (Dimensity 7025 Ultra ist ARM64)
+        # CPU
         "cpu_type": "arm64-v8a", 
         
-        # OS Specs: Android 15 (HyperOS 2)
+        # OS (Android 15 / HyperOS 2)
         "os_name": "android",
         "os_version": "15",
-        "api_level": "35",           # Android 15 = API Level 35
-        "os_build": "OS2.0.1.0.VNQMIXM", # Realistische HyperOS 2 Build ID
+        "api_level": "35",
+        "os_build": "OS2.0.1.0.VNQMIXM",
         
         # Locale & Network
         "language": "de",
         "country": "DE",
-        "mcc": "262", # Deutschland
-        "mnc": "02",  # Vodafone (Beispiel) oder O2
-        "connectivity_type": "1", # WiFi
+        "mcc": "262",
+        "mnc": "02",
+        "connectivity_type": "1",
         
-        # App Info (Bleibt gleich oder aus Config)
-        "package_name": "com.yottagames.mafiawar", # Sollte aus Config kommen, hier Fallback
+        # App Info
+        "package_name": "com.yottagames.mafiawar",
         "app_version": "1.8.181",
         "tracking_enabled": "1",
         "attribution_deeplink": "1",
@@ -154,7 +154,7 @@ def get_poco_blueprint(device_id, app_token, event_token, android_uuid):
         "gps_adid_src": "service",
         "gps_adid_attempt": "1",
         
-        # Session & Time
+        # Session
         "installed_at": install_time,
         "created_at": current_time,
         "sent_at": current_time,
@@ -166,18 +166,13 @@ def get_poco_blueprint(device_id, app_token, event_token, android_uuid):
     return data
 
 # ---------------------------------------------------------
-# 5. PAYLOAD GENERATOR
+# 6. PAYLOAD GENERATOR
 # ---------------------------------------------------------
 def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=None, tracker_link=None):
     base_url = "https://app.adjust.com/event"
-    
-    # 1. Android UUID generieren
     android_uuid = generate_android_uuid(device_id)
-    
-    # 2. POCO Blueprint laden
     data = get_poco_blueprint(device_id, app_token, event_token, android_uuid)
 
-    # 3. Link Parsing & Injection (Offerwall IDs)
     partner_params_dict = {}
     extracted_ip = None
     
@@ -188,35 +183,25 @@ def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=N
         try:
             parsed = urlparse(tracker_link)
             query_params = parse_qs(parsed.query)
-            # Keys, die wir nicht in partner_params wollen, weil sie schon im Blueprint sind
             blocked_keys = list(data.keys()) + ["idfa", "skadn", "s2s", "referrer"]
             
             for key, val_list in query_params.items():
                 val = val_list[0]
-                
-                # Alles Unbekannte (Tracking IDs) sammeln
                 if key not in blocked_keys and key != "gps_adid":
                     partner_params_dict[key] = val
-
-                # Suche nach der "Money ID" (Callback ID)
                 key_lower = key.lower()
                 if not found_callback_id:
                     for pid in potential_id_keys:
                         if pid in key_lower: found_callback_id = val; break
-
-                # IP
                 if key in ["ip", "device_ip", "user_ip", "ip_address"]: 
                     extracted_ip = val
                     data["ip_address"] = val
-                
-                # Referrer
                 if key == "referrer":
                     decoded_ref = unquote(val)
                     data["install_referrer"] = decoded_ref
                     data["referrer"] = decoded_ref
         except: pass
     
-    # Injections
     if found_callback_id:
         data["callback_id"] = found_callback_id
     
@@ -225,18 +210,13 @@ def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=N
         data["partner_params"] = json_params
         data["callback_params"] = json_params
 
-    # Timestamp für Header (Unix)
     ts_header = str(int(time.time()))
-    
     return base_url, data, extracted_ip, ts_header
 
 # ---------------------------------------------------------
-# 6. SENDER (POCO Header)
+# 7. SENDER (POCO Header)
 # ---------------------------------------------------------
 def send_request_auto_detect(base_url, data_payload, ts_header, platform, spoof_ip=None, proxies=None):
-    
-    # User Agent für POCO M7 Pro 5G / Android 15
-    # Format: Mozilla/5.0 (Linux; Android 15; 2409FPCC4G Build/OS2.0.1.0.VNQMIXM; wv) ...
     user_agent = "Mozilla/5.0 (Linux; Android 15; 2409FPCC4G Build/OS2.0.1.0.VNQMIXM; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.102 Mobile Safari/537.36"
     
     headers = {
@@ -254,7 +234,6 @@ def send_request_auto_detect(base_url, data_payload, ts_header, platform, spoof_
 
     try:
         r = requests.post(base_url, data=data_payload, headers=headers, timeout=10, proxies=proxies)
-        
         status = r.status_code
         resp_text = r.text
         
