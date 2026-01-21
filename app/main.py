@@ -8,6 +8,7 @@ from fastapi import FastAPI, Form, HTTPException, Header
 from fastapi.responses import JSONResponse
 from discord_webhook import DiscordWebhook, DiscordEmbed
 
+# Imports aus logic.py
 try:
     from logic import generate_adjust_payload, send_request_auto_detect, get_proxy_dict, get_skadn_value_for_app, ua_manager, extract_id_and_platform_from_link
 except ImportError:
@@ -17,6 +18,7 @@ app = FastAPI(title="Zone C Engine")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "DEFAULT")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
+# --- HELPER ---
 def send_detailed_log(status, ctx, resp, ip, proxy):
     if not DISCORD_WEBHOOK_URL: return
     color = "39ff14" if "status 200" in status.lower() else "ff3333"
@@ -40,6 +42,24 @@ def load_app_data():
         if os.path.exists(path):
             with open(path, 'r') as f: return json.load(f)
     return {}
+
+# --- ROUTES ---
+
+@app.get("/")
+def read_root():
+    return {"status": "Zone C is running", "version": "SDK-Emulation-Mode"}
+
+@app.get("/health")
+def health():
+    return {"status": "online"}
+
+# WICHTIG: Diese Route fehlte! Sie liefert die Apps an Zone B.
+@app.get("/api/get-apps")
+async def get_apps(x_api_key: str = Header(None)):
+    if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
+    data = load_app_data()
+    # Wir geben nur App-Namen und Event-Listen zurück
+    return {app_name: list(details.get('events', {}).keys()) for app_name, details in data.items()}
 
 @app.post("/api/internal-execute")
 async def internal_execute(
