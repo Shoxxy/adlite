@@ -63,6 +63,33 @@
     },
     "use_get_request": false
   },
+    "mafia": {
+    "app_token": "ghbi6gp6r400",
+    "events": {
+      "Unknown 1": "xyb64e",
+      "Unknown 2": "wvy21c",
+      "Unknown 3": "8wcv98",
+      "Unknown 4": "39jq6c",
+      "Unknown 5": "c0a2b3",
+      "Unknown 6": "1ej10f",
+      "Unknown 7": "961469"
+    }
+  },
+  "Mafia City": {
+    "app_token": "ghbi6gp6r400",
+    "events": {
+      "Unknown 1": "xyb64e",
+      "Unknown 2": "lb3syj",
+      "Unknown 3": "wvy21c",
+      "Unknown 4": "8wcv98",
+      "Unknown 5": "64wk78",
+      "Unknown 6": "c0a2b3",
+      "Unknown 7": "1ej10f",
+      "Unknown 8": "s1z3g1",
+      "Unknown 9": "961469",
+      "Unknown 10": "txqx8h"
+    }
+  },
     "Crypto Miner Tycoon": {
     "app_token": "54hqj7nkjaww",
     "use_get_request": true,
