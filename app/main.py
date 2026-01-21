@@ -8,9 +8,10 @@ from fastapi.responses import JSONResponse
 from discord_webhook import DiscordWebhook, DiscordEmbed
 
 try:
-    from logic import generate_adjust_url, send_request_auto_detect, get_skadn_value_for_app, ua_manager, extract_id_and_platform_from_link
+    # ACHTUNG: Importiere jetzt generate_adjust_params statt generate_adjust_url
+    from logic import generate_adjust_params, send_request_auto_detect, get_skadn_value_for_app, ua_manager, extract_id_and_platform_from_link
 except ImportError:
-    from app.logic import generate_adjust_url, send_request_auto_detect, get_skadn_value_for_app, ua_manager, extract_id_and_platform_from_link
+    from app.logic import generate_adjust_params, send_request_auto_detect, get_skadn_value_for_app, ua_manager, extract_id_and_platform_from_link
 
 app = FastAPI(title="Zone C Engine")
 
@@ -33,7 +34,6 @@ def send_detailed_log_extended(status_type, context, response_text, user_agent, 
 
     try:
         webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-        
         status_text = ""
         if id_overridden: status_text += "(LINK PARSED) "
         if is_fixed_ua: status_text += "(LOCKED)"
@@ -41,12 +41,10 @@ def send_detailed_log_extended(status_type, context, response_text, user_agent, 
         
         embed = DiscordEmbed(title=f"INJECTION {status_type.upper()} {status_text}", color=color)
         embed.set_author(name=f"OPERATOR: {context.get('username', 'Unknown').upper()}")
-        
         embed.add_embed_field(name="Target", value=f"`{context['app_name']}` ({context['platform'].upper()})", inline=True)
         embed.add_embed_field(name="Event", value=f"**{context['event_name']}**", inline=True)
         embed.add_embed_field(name="Device ID", value=f"`{context['device_id']}`", inline=False)
         
-        # ADVANCED ATTRIBUTION INFO
         adv_val = f"Proxy: **{proxy_info}**\n"
         if spoofed_ip: adv_val += f"Spoof IP: `{spoofed_ip}`\n"
         if used_link: adv_val += "Link: Parsed ✅"
@@ -56,9 +54,7 @@ def send_detailed_log_extended(status_type, context, response_text, user_agent, 
         
         clean_resp = str(response_text).replace("```", "")[:600]
         embed.add_embed_field(name="Engine Response", value=f"```json\n{clean_resp}\n```", inline=False)
-        
-        webhook.add_embed(embed)
-        webhook.execute()
+        webhook.add_embed(embed); webhook.execute()
     except: pass
 
 def load_app_data():
@@ -99,12 +95,10 @@ async def internal_execute(
     try:
         if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
 
-        # 1. LINK OVERRIDE
         if tracker_link:
             ex_id, ex_plat = extract_id_and_platform_from_link(tracker_link)
             if ex_id: device_id = ex_id; platform = ex_plat; id_was_overridden = True
 
-        # 2. MANAGER (UA & LINK)
         final_ua, is_cached, active_link = ua_manager.get_or_create(
             device_id=device_id, platform=platform, browser=pro_browser, model=pro_model,
             os_ver=pro_os_ver, use_random=use_random_ua, force_update=force_ua_update,
@@ -117,16 +111,21 @@ async def internal_execute(
         app_info = data[app_name]
         event_token = app_info['events'].get(event_name)
         app_token = app_info.get('app_token')
-        use_get = app_info.get('use_get_request', False)
+        
+        # HIER LESEN WIR DIE JSON CONFIG:
+        use_get = app_info.get('use_get_request', False) 
+        
         skadn_val = get_skadn_value_for_app(app_name) if platform == "ios" else None
 
-        # 3. URL & IP
-        url, ip_to_spoof = generate_adjust_url(event_token, app_token, device_id, platform, skadn_val, active_link)
+        # NEU: Dict zurückbekommen
+        base_url, params, ip_to_spoof = generate_adjust_params(event_token, app_token, device_id, platform, skadn_val, active_link)
         if ip_to_spoof: ip_spoofed = ip_to_spoof
 
-        # 4. SEND WITH PROXY
+        # AN SENDER ÜBERGEBEN
         raw = send_request_auto_detect(
-            url, platform, use_get, skadn_val, 
+            base_url, 
+            params, # Übergebe jetzt das Dictionary!
+            use_get, # true = params in URL, false = params in Body
             user_agent=final_ua, 
             spoof_ip=ip_spoofed,
             manual_proxy=proxy_url,
@@ -136,7 +135,6 @@ async def internal_execute(
         raw_l = str(raw).lower()
         status = "error"; msg = "Error"
         if "ignoring event" in raw_l: status="warning"; msg="Duplicate"
-        elif "request doesn't contain device identifiers" in raw_l: status="error"; msg="Invalid ID"
         elif "success" in raw_l or "ok" in raw_l: status="success"; msg="Success"
         elif "via" in raw_l: status="success"; msg="Success"
         else: status="error"; msg=f"Server: {raw[:40]}"
