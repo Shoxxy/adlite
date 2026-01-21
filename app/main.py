@@ -8,7 +8,6 @@ from fastapi import FastAPI, Form, HTTPException, Header
 from fastapi.responses import JSONResponse
 from discord_webhook import DiscordWebhook, DiscordEmbed
 
-# Imports aus logic.py
 try:
     from logic import generate_adjust_payload, send_request_auto_detect, get_proxy_dict, get_skadn_value_for_app, ua_manager, extract_id_and_platform_from_link
 except ImportError:
@@ -18,19 +17,18 @@ app = FastAPI(title="Zone C Engine")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "DEFAULT")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
-# --- HELPER ---
 def send_detailed_log(status, ctx, resp, ip, proxy):
     if not DISCORD_WEBHOOK_URL: return
     color = "39ff14" if "status 200" in status.lower() else "ff3333"
     try:
         webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-        embed = DiscordEmbed(title=f"SDK EVENT {status.upper()}", color=color)
+        embed = DiscordEmbed(title=f"POCO BLUEPRINT INJECT {status.upper()}", color=color)
         embed.set_author(name=f"USER: {ctx.get('username')}")
         embed.add_embed_field(name="Target", value=f"{ctx['app_name']} - {ctx['event_name']}", inline=True)
         embed.add_embed_field(name="Device ID", value=ctx['device_id'], inline=False)
         
         stealth = f"Proxy: {proxy}\n"
-        if ip: stealth += f"IP Link: {ip}"
+        if ip: stealth += f"Link IP: {ip}"
         embed.add_embed_field(name="Stealth Info", value=stealth, inline=False)
         
         embed.add_embed_field(name="Server Response", value=f"```\n{str(resp)[:500]}\n```", inline=False)
@@ -43,22 +41,16 @@ def load_app_data():
             with open(path, 'r') as f: return json.load(f)
     return {}
 
-# --- ROUTES ---
-
 @app.get("/")
-def read_root():
-    return {"status": "Zone C is running", "version": "SDK-Emulation-Mode"}
+def read_root(): return {"status": "Zone C Ready (POCO Mode)"}
 
 @app.get("/health")
-def health():
-    return {"status": "online"}
+def health(): return {"status": "online"}
 
-# WICHTIG: Diese Route fehlte! Sie liefert die Apps an Zone B.
 @app.get("/api/get-apps")
 async def get_apps(x_api_key: str = Header(None)):
     if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
     data = load_app_data()
-    # Wir geben nur App-Namen und Event-Listen zurück
     return {app_name: list(details.get('events', {}).keys()) for app_name, details in data.items()}
 
 @app.post("/api/internal-execute")
@@ -76,7 +68,6 @@ async def internal_execute(
     try:
         if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
 
-        # 1. Parsing Override (Falls ID im Link steht, hat sie Vorrang)
         if tracker_link:
             ex_id, ex_plat = extract_id_and_platform_from_link(tracker_link)
             if ex_id: device_id = ex_id; platform = ex_plat
@@ -89,15 +80,14 @@ async def internal_execute(
         app_token = app_info.get('app_token')
         skadn_val = get_skadn_value_for_app(app_name) if platform == "ios" else None
         
-        # Proxy Setup
         proxies = get_proxy_dict(proxy_url, use_auto_proxy)
 
-        # 2. Payload bauen (Mit Link-Parametern in partner_params!)
+        # 1. POCO BLUEPRINT PAYLOAD
         base_url, payload, ip_to_spoof, timestamp = generate_adjust_payload(
             event_token, app_token, device_id, platform, skadn_val, tracker_link
         )
 
-        # 3. Senden (SDK Simulation)
+        # 2. SEND REQUEST (Dynamic UA)
         raw = send_request_auto_detect(
             base_url, 
             payload, 
@@ -107,7 +97,6 @@ async def internal_execute(
             proxies=proxies
         )
         
-        # 4. Resultat
         raw_l = str(raw).lower()
         status = "error"
         if "status 200" in raw_l: status = "success"
