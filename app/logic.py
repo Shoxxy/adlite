@@ -5,11 +5,12 @@ import datetime
 import sqlite3
 import threading
 import os
-import traceback
-import json # WICHTIG FÜR PARTNER PARAMS
-from urllib.parse import urlparse, parse_qs, urlencode
+import json
+from urllib.parse import urlparse, parse_qs
 
-# --- UA MANAGER (Bleibt gleich) ---
+# ---------------------------------------------------------
+# 1. USER AGENT MANAGER (Bleibt für Browser-Simulation)
+# ---------------------------------------------------------
 class UserAgentManager:
     def __init__(self):
         self.db_path = "/tmp/user_agents.db"
@@ -60,7 +61,9 @@ class UserAgentManager:
 
 ua_manager = UserAgentManager()
 
-# --- NETWORK ---
+# ---------------------------------------------------------
+# 2. PROXY ENGINE
+# ---------------------------------------------------------
 GLOBAL_SESSION = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
 GLOBAL_SESSION.mount('https://', adapter)
@@ -83,7 +86,9 @@ class AutoProxyEngine:
         return []
 proxy_engine = AutoProxyEngine()
 
-# --- LOGIC (SMART ID FIX) ---
+# ---------------------------------------------------------
+# 3. CORE LOGIC (SDK EMULATION from fix14.py)
+# ---------------------------------------------------------
 def extract_id_and_platform_from_link(link):
     if not link or "adjust" not in link: return None, None
     try:
@@ -94,94 +99,113 @@ def extract_id_and_platform_from_link(link):
     except: pass
     return None, None
 
-def generate_adjust_params(event_token, app_token, device_id, platform, skadn=None, tracker_link=None):
+def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=None, tracker_link=None):
+    # Basis URL aus fix14.py
     base_url = "https://app.adjust.com/event"
     
-    # Standard URL Params
-    url_params = {
-        "s2s": "1", # ZWINGEND FÜR TRACKING
-        "event_token": event_token,
-        "app_token": app_token,
-        "environment": "production"
+    current_time = str(int(time.time()))
+    
+    # BASIS DATEN (SDK STYLE) - KEIN S2S MEHR!
+    data = {
+        'app_token': app_token,
+        'event_token': event_token,
+        'environment': 'production',
+        'created_at': current_time,
+        'sent_at': current_time,
+        'session_count': '1',
     }
     
-    # Body Params
-    body_params = {}
+    # Plattform-spezifische Dummy-Daten (aus fix14.py übernommen)
     if platform == "android":
-        body_params["gps_adid"] = device_id
-        body_params["adid"] = device_id
+        data.update({
+            'gps_adid': device_id,
+            # Fallback Dummy-Daten, falls wir keine besseren haben
+            'device_manufacturer': 'samsung', 
+            'device_name': 'SM-G998B',
+            'os_name': 'android', 
+            'os_version': '13'
+        })
     else:
-        body_params["idfa"] = device_id
-        if skadn: body_params["skadn"] = skadn
+        data.update({
+            'idfa': device_id,
+            'device_manufacturer': 'apple',
+            'device_name': 'iPhone14,2',
+            'os_name': 'ios',
+            'os_version': '16.0'
+        })
+
+    if skadn and platform == "ios":
+        data['skadn_conv_value'] = str(skadn)
 
     extracted_ip = None
-    has_referrer = False
     
-    # --- NEU: PARTNER PARAMS CONTAINER ---
-    # Hier sammeln wir ALLES aus dem Link, um es als JSON an Adjust zu geben.
-    # Das ist der Weg, wie Offerwalls ihre Daten zurückbekommen.
-    partner_params_dict = {}
-
-    # --- NEU: ID DETECTION ---
-    # Wir suchen nach diesen Keys, um sie als "callback_id" zu erzwingen
+    # LINK PARSING & ID INJECTION
     potential_id_keys = ["click_id", "clickid", "trans_id", "transaction_id", "sub_id", "aff_sub", "oid", "uid"]
     found_callback_id = None
+    partner_params_dict = {}
 
     if tracker_link and "adjust" in tracker_link:
         try:
             parsed = urlparse(tracker_link)
             query_params = parse_qs(parsed.query)
-            blocked_keys = ["gps_adid", "adid", "idfa", "app_token", "skadn", "s2s", "event_token", "environment"]
+            blocked_keys = ["gps_adid", "adid", "idfa", "app_token", "skadn", "s2s", "event_token", "environment", "created_at", "sent_at"]
             
             for key, val_list in query_params.items():
                 val = val_list[0]
                 
-                # 1. Sammeln für Partner Params (WICHTIG!)
+                # Partner Params sammeln
                 if key not in blocked_keys:
                     partner_params_dict[key] = val
 
-                # 2. Suche nach der "Money ID"
-                if not found_callback_id and any(pid in key.lower() for pid in potential_id_keys):
-                    found_callback_id = val # TREFFER! Das ist unsere ID.
+                # ID suchen
+                key_lower = key.lower()
+                if not found_callback_id:
+                    for pid in potential_id_keys:
+                        if pid in key_lower: found_callback_id = val; break
 
-                # 3. Referrer & IP Logik wie gehabt
-                if key == "referrer": body_params["install_referrer"] = val; has_referrer = True; continue
-                if key in ["ip", "device_ip", "user_ip", "ip_address"]: extracted_ip = val; body_params["ip_address"] = val; continue
-                
-                # 4. Alles andere durchreichen
-                if key not in blocked_keys: body_params[key] = val
+                # IP und Referrer
+                if key == "referrer": data["install_referrer"] = val; continue
+                if key in ["ip", "device_ip", "user_ip", "ip_address"]: extracted_ip = val; data["ip_address"] = val; continue
         except: pass
     
-    # --- FINALE ID LOGIK ---
+    # WICHTIG: Callback ID (OfferToro ID)
     if found_callback_id:
-        # Wir haben die echte ID aus dem Link gefunden!
-        url_params["callback_id"] = found_callback_id
-        # Wir setzen sie auch als "click_id", falls Adjust das lieber mag
-        if "click_id" not in body_params: body_params["click_id"] = found_callback_id
-    else:
-        # Notlösung: Zeitstempel (damit zumindest das Event durchgeht)
-        url_params["callback_id"] = f"{int(time.time())}_{random.randint(1000,9999)}"
-
-    # --- FINALE PARTNER PARAMS LOGIK ---
-    # Wir codieren die gesammelten Link-Daten als JSON und hängen sie an
-    if partner_params_dict:
-        url_params["partner_params"] = json.dumps(partner_params_dict)
-        # Manchmal auch callback_params genannt
-        url_params["callback_params"] = json.dumps(partner_params_dict)
-
-    # Time Travel
-    if has_referrer and platform == "android":
-        now = int(time.time())
-        body_params["referrer_click_timestamp_seconds"] = str(now - random.randint(60, 180))
-        body_params["install_begin_timestamp_seconds"] = str(now - random.randint(10, 40))
-
-    return base_url, url_params, body_params, extracted_ip
-
-def send_request_auto_detect(base_url, url_params, body_params, use_get, user_agent=None, spoof_ip=None, manual_proxy=None, use_auto_proxy=False):
-    headers = {}
-    if user_agent: headers["User-Agent"] = user_agent
-    headers["Accept-Language"] = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
+        data["callback_id"] = found_callback_id
     
+    # WICHTIG: Partner Params (JSON String)
+    if partner_params_dict:
+        json_params = json.dumps(partner_params_dict)
+        data["partner_params"] = json_params
+        data["callback_params"] = json_params
+
+    return base_url, data, extracted_ip, current_time
+
+# ---------------------------------------------------------
+# 4. SENDER (HEADER SIMULATION from fix14.py)
+# ---------------------------------------------------------
+def send_request_auto_detect(base_url, data_payload, use_get, current_time, platform, spoof_ip=None, manual_proxy=None, use_auto_proxy=False):
+    
+    # HEADER BAUEN WIE IM FIX14.PY
+    headers = {}
+    
+    if platform == "android":
+        headers = {
+            'User-Agent': 'Adjust/4.38.0 (Android 13; SM-G998B; Build/TP1A.220624.014)',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Adjust-SDK-Version': '4.38.0',
+            'X-Adjust-Build': current_time,
+            'Client-SDK': 'android4.38.0'
+        }
+    else:
+        headers = {
+            'User-Agent': 'Adjust/4.38.0 (iOS 16.0; iPhone14,2; Build/20A362)',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Adjust-SDK-Version': '4.38.0',
+            'X-Adjust-Build': current_time,
+            'Client-SDK': 'ios4.38.0'
+        }
+
+    # IP Spoofing (zusätzlich zu den SDK Headern)
     if spoof_ip:
         headers["X-Forwarded-For"] = spoof_ip
         headers["X-Real-IP"] = spoof_ip
@@ -203,18 +227,15 @@ def send_request_auto_detect(base_url, url_params, body_params, use_get, user_ag
         current_proxies = {"http": proxy, "https": proxy} if proxy else None
         p_name = proxy if proxy else "Direct"
         try:
-            if use_get:
-                full_params = {**url_params, **body_params}
-                r = GLOBAL_SESSION.get(base_url, params=full_params, headers=headers, timeout=10, proxies=current_proxies)
-            else:
-                r = GLOBAL_SESSION.post(base_url, params=url_params, data=body_params, headers=headers, timeout=10, proxies=current_proxies)
+            # SDK POST REQUEST (WIE IN FIX14.PY)
+            r = requests.post(base_url, data=data_payload, headers=headers, timeout=10, proxies=current_proxies)
             
             status = r.status_code
             resp_text = r.text
             
             if status == 200:
                 msg = f"OK (Via {p_name})"
-                if resp_text and resp_text != "{}": msg += f" | {resp_text}"
+                if resp_text: msg += f" | {resp_text}"
                 return f"Status {status}: {msg}"
             
             return f"Status {status}: {resp_text} (via {p_name})"
