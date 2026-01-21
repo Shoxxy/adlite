@@ -7,68 +7,60 @@ from fastapi import FastAPI, Form, HTTPException, Header
 from fastapi.responses import JSONResponse
 from discord_webhook import DiscordWebhook, DiscordEmbed
 
+# Robuster Import
 try:
     from logic import generate_adjust_url, send_request_auto_detect, get_skadn_value_for_app, ua_manager
 except ImportError:
     from app.logic import generate_adjust_url, send_request_auto_detect, get_skadn_value_for_app, ua_manager
 
 app = FastAPI(title="Zone C Engine")
+
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "SET_THIS_IN_ENV")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 HOSTNAME = socket.gethostname()
 logging.basicConfig(level=logging.INFO)
 
+# --- STARTUP ---
 @app.on_event("startup")
 async def startup_event():
+    print("Zone C Starting up...")
     if DISCORD_WEBHOOK_URL:
         try:
             webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-            embed = DiscordEmbed(title="🟢 ENGINE ONLINE", description="Zone C ready.", color="00ff00")
+            embed = DiscordEmbed(title="🟢 ENGINE ONLINE (REBOOTED)", description="Zone C is back online.", color="00ff00")
             webhook.add_embed(embed)
             webhook.execute()
         except: pass
 
+# --- LOGGING ---
 def send_detailed_log(status_type, context, response_text, user_agent, is_fixed_ua):
     if not DISCORD_WEBHOOK_URL: return
     color = "39ff14" if status_type == "success" else "ff3333"
     if status_type == "warning": color = "ffaa00"
-    if status_type == "error": color = "ff0000"
-
+    
     try:
         webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-        
-        # Titel Status
-        db_status = "(LOCKED)" if is_fixed_ua else "(NEW / OVERRIDE)"
-        
+        db_status = "(LOCKED)" if is_fixed_ua else "(UPDATED)"
         embed = DiscordEmbed(title=f"INJECTION {status_type.upper()} {db_status}", color=color)
-        embed.set_author(name=f"OPERATOR: {context.get('username', 'Unknown').upper()}")
         
-        embed.add_embed_field(name="Target", value=f"`{context['app_name']}` ({context['platform'].upper()})", inline=True)
-        embed.add_embed_field(name="Event", value=f"**{context['event_name']}**", inline=True)
-        embed.add_embed_field(name="Device ID", value=f"`{context['device_id']}`", inline=False)
-        
-        # UA Info
-        if is_fixed_ua:
-            ua_source = "🔒 DB CACHE (Standard Mode)"
-        else:
-            # Checken ob es ein manueller Override war (Indirekt)
-            ua_source = "✨ MANUAL OVERRIDE / FORCE UPDATE"
-
-        embed.add_embed_field(name="UA Strategy", value=ua_source, inline=True)
-        embed.add_embed_field(name="User Agent Used", value=f"```\n{user_agent}\n```", inline=False)
-        
-        clean_resp = str(response_text).replace("```", "")[:600]
-        embed.add_embed_field(name="Engine Response", value=f"```json\n{clean_resp}\n```", inline=False)
+        embed.set_author(name=f"OPERATOR: {context.get('username', 'Unknown')}")
+        embed.add_embed_field(name="App", value=f"{context['app_name']} ({context['platform']})", inline=True)
+        embed.add_embed_field(name="Event", value=context['event_name'], inline=True)
+        embed.add_embed_field(name="ID", value=context['device_id'], inline=False)
+        embed.add_embed_field(name="User Agent", value=f"```\n{user_agent}\n```", inline=False)
+        embed.add_embed_field(name="Response", value=f"```\n{str(response_text)[:400]}\n```", inline=False)
         
         webhook.add_embed(embed)
         webhook.execute()
-    except Exception as e:
-        logging.error(f"Discord Log Error: {e}")
+    except: pass
 
 def load_app_data():
-    for path in ["app/data_android.json", "data_android.json", "../data_android.json"]:
+    paths = ["app/data_android.json", "data_android.json", "../data_android.json"]
+    for path in paths:
         if os.path.exists(path):
-            with open(path, 'r') as f: return json.load(f)
+            try:
+                with open(path, 'r', encoding='utf-8') as f: return json.load(f)
+            except: pass
     return {}
 
 @app.get("/health")
@@ -94,27 +86,20 @@ async def internal_execute(
     force_ua_update: bool = Form(False),
     x_api_key: str = Header(None)
 ):
-    # Crash-Safe Init
-    final_ua = "N/A"
+    if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
+
+    final_ua = "Init"
     is_cached = False
-    log_ctx = {"username":username, "app_name":app_name, "platform":platform, "device_id":device_id, "event_name":event_name}
-
+    
     try:
-        if x_api_key != INTERNAL_API_KEY: raise HTTPException(status_code=403)
-
-        # 1. UA Holen (Mit Override Priorität)
         final_ua, is_cached = ua_manager.get_or_create(
-            device_id=device_id,
-            platform=platform,
-            browser=pro_browser,
-            model=pro_model,
-            os_ver=pro_os_ver,
-            use_random=use_random_ua,
-            force_update=force_ua_update
+            device_id=device_id, platform=platform,
+            browser=pro_browser, model=pro_model, os_ver=pro_os_ver,
+            use_random=use_random_ua, force_update=force_ua_update
         )
 
         data = load_app_data()
-        if app_name not in data: return {"status": "error", "message": "App Config Missing"}
+        if app_name not in data: return {"status": "error", "message": "Config Missing"}
         
         app_info = data[app_name]
         event_token = app_info['events'].get(event_name)
@@ -128,15 +113,12 @@ async def internal_execute(
         
         status = "error"; msg = "Error"
         if "ignoring event" in raw_l: status="warning"; msg="Duplicate"
-        elif "request doesn't contain device identifiers" in raw_l: status="error"; msg="Invalid ID"
         elif "success" in raw_l or "ok" in raw_l: status="success"; msg="Success"
-        else: status="error"; msg=f"Server: {raw[:40]}"
+        elif "request doesn't contain device identifiers" in raw_l: status="error"; msg="Invalid ID"
         
-        send_detailed_log(status, log_ctx, raw, final_ua, is_cached)
+        send_detailed_log(status, {"username":username, "app_name":app_name, "platform":platform, "device_id":device_id, "event_name":event_name}, raw, final_ua, is_cached)
         return {"status": status, "message": msg}
 
     except Exception as e:
-        err = traceback.format_exc()
-        logging.error(f"ENGINE CRASH: {err}")
-        send_detailed_log("error", log_ctx, f"CRASH: {str(e)}", final_ua, is_cached)
-        return JSONResponse({"status": "error", "message": "Engine Error"})
+        print(f"CRASH: {e}")
+        return JSONResponse({"status": "error", "message": f"Server Error: {str(e)}"})
