@@ -8,7 +8,9 @@ import os
 import traceback
 from urllib.parse import urlparse, parse_qs, urlencode
 
-# --- UA MANAGER (Bleibt gleich) ---
+# ---------------------------------------------------------
+# 1. USER AGENT MANAGER (Unverändert)
+# ---------------------------------------------------------
 class UserAgentManager:
     def __init__(self):
         self.db_path = "/tmp/user_agents.db"
@@ -59,7 +61,9 @@ class UserAgentManager:
 
 ua_manager = UserAgentManager()
 
-# --- NETWORK ---
+# ---------------------------------------------------------
+# 2. NETWORK
+# ---------------------------------------------------------
 GLOBAL_SESSION = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
 GLOBAL_SESSION.mount('https://', adapter)
@@ -82,7 +86,9 @@ class AutoProxyEngine:
         return []
 proxy_engine = AutoProxyEngine()
 
-# --- LOGIC ---
+# ---------------------------------------------------------
+# 3. CORE LOGIC (HYBRID PARAMETERS)
+# ---------------------------------------------------------
 def extract_id_and_platform_from_link(link):
     if not link or "adjust" not in link: return None, None
     try:
@@ -94,22 +100,24 @@ def extract_id_and_platform_from_link(link):
     return None, None
 
 def generate_adjust_params(event_token, app_token, device_id, platform, skadn=None, tracker_link=None):
-    # Wir geben jetzt die Basis-URL UND die Parameter getrennt zurück
+    # Basis URL
     base_url = "https://app.adjust.com/event"
     
-    # Basis Parameter
-    params = {
+    # 1. URL Params (Tokens kommen IMMER hier rein, damit Adjust sie findet)
+    url_params = {
         "event_token": event_token,
         "app_token": app_token
-        # KEIN s2s hier!
     }
     
+    # 2. Body Params (Der Rest kommt hier rein)
+    body_params = {}
+    
     if platform == "android":
-        params["gps_adid"] = device_id
-        params["adid"] = device_id
+        body_params["gps_adid"] = device_id
+        body_params["adid"] = device_id
     else:
-        params["idfa"] = device_id
-        if skadn: params["skadn"] = skadn
+        body_params["idfa"] = device_id
+        if skadn: body_params["skadn"] = skadn
 
     extracted_ip = None
     has_referrer = False
@@ -122,19 +130,19 @@ def generate_adjust_params(event_token, app_token, device_id, platform, skadn=No
             
             for key, val_list in query_params.items():
                 val = val_list[0]
-                if key == "referrer": params["install_referrer"] = val; has_referrer = True; continue
-                if key in ["ip", "device_ip", "user_ip", "ip_address"]: extracted_ip = val; params["ip_address"] = val; continue
-                if key not in blocked_keys: params[key] = val
+                if key == "referrer": body_params["install_referrer"] = val; has_referrer = True; continue
+                if key in ["ip", "device_ip", "user_ip", "ip_address"]: extracted_ip = val; body_params["ip_address"] = val; continue
+                if key not in blocked_keys: body_params[key] = val
         except: pass
         
     if has_referrer and platform == "android":
         now = int(time.time())
-        params["referrer_click_timestamp_seconds"] = str(now - random.randint(45, 120))
-        params["install_begin_timestamp_seconds"] = str(now - random.randint(5, 30))
+        body_params["referrer_click_timestamp_seconds"] = str(now - random.randint(45, 120))
+        body_params["install_begin_timestamp_seconds"] = str(now - random.randint(5, 30))
 
-    return base_url, params, extracted_ip
+    return base_url, url_params, body_params, extracted_ip
 
-def send_request_auto_detect(base_url, params, use_get, user_agent=None, spoof_ip=None, manual_proxy=None, use_auto_proxy=False):
+def send_request_auto_detect(base_url, url_params, body_params, use_get, user_agent=None, spoof_ip=None, manual_proxy=None, use_auto_proxy=False):
     headers = {}
     if user_agent: headers["User-Agent"] = user_agent
     headers["Accept-Language"] = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -160,17 +168,29 @@ def send_request_auto_detect(base_url, params, use_get, user_agent=None, spoof_i
         current_proxies = {"http": proxy, "https": proxy} if proxy else None
         p_name = proxy if proxy else "Direct"
         try:
-            # WICHTIGE UNTERSCHEIDUNG:
-            if use_get:
-                # GET: Params in die URL
-                r = GLOBAL_SESSION.get(base_url, params=params, headers=headers, timeout=10, proxies=current_proxies)
-            else:
-                # POST: Params in den BODY (data)
-                r = GLOBAL_SESSION.post(base_url, data=params, headers=headers, timeout=10, proxies=current_proxies)
+            # HYBRID MODE:
+            # URL bekommt url_params (app_token, event_token)
+            # Body bekommt body_params (ids, referrer, etc)
             
-            if "OK" in r.text or "success" in r.text.lower():
-                return f"{r.text} (via {p_name})"
-            return f"{r.text} (via {p_name})"
+            if use_get:
+                # Bei GET kommt ALLES in die URL (Mergen)
+                full_params = {**url_params, **body_params}
+                r = GLOBAL_SESSION.get(base_url, params=full_params, headers=headers, timeout=10, proxies=current_proxies)
+            else:
+                # Bei POST: Tokens in URL, Rest in Body
+                r = GLOBAL_SESSION.post(base_url, params=url_params, data=body_params, headers=headers, timeout=10, proxies=current_proxies)
+            
+            # Response analysieren
+            resp_str = r.text
+            status = r.status_code
+            
+            # Check Status Code: 200 ist immer ein Sieg
+            if status == 200:
+                if not resp_str or resp_str == "{}": 
+                    return f"Status {status}: OK (Empty Response) (via {p_name})"
+                return f"Status {status}: {resp_str} (via {p_name})"
+            
+            return f"Status {status}: {resp_str} (via {p_name})"
             
         except Exception as e:
             last_error = str(e)
