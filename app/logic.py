@@ -8,15 +8,33 @@ import os
 import json
 import uuid
 import hashlib
+import string
 from urllib.parse import urlparse, parse_qs, unquote
 
 # ---------------------------------------------------------
-# 1. HELPER: UUID GENERATOR
+# 1. HELPER: ID GENERATORS
 # ---------------------------------------------------------
 def generate_android_uuid(device_id):
+    """Persistente Android UUID aus Device ID"""
     hash_obj = hashlib.md5(device_id.encode())
     guid = uuid.UUID(hash_obj.hexdigest())
     return str(guid)
+
+def generate_google_app_set_id(device_id):
+    """Persistente App Set ID (Scope ID)"""
+    # Wir nehmen einen leicht anderen Hash als Basis für Variation
+    seed = device_id + "_appset"
+    hash_obj = hashlib.md5(seed.encode())
+    guid = uuid.UUID(hash_obj.hexdigest())
+    return str(guid)
+
+def generate_push_token():
+    """Generiert einen realistisch aussehenden FCM Push Token"""
+    # FCM Tokens sind lang und base64-url-safe ähnlich
+    # Beispiel: d6h5RvudQea...:APA91b...
+    part1 = ''.join(random.choices(string.ascii_letters + string.digits + "-_", k=22))
+    part2 = ''.join(random.choices(string.ascii_letters + string.digits + "-_", k=134))
+    return f"{part1}:APA91b{part2}"
 
 # ---------------------------------------------------------
 # 2. PROXY & NETWORK
@@ -51,18 +69,14 @@ def get_proxy_dict(manual_proxy=None, use_auto_proxy=False):
     return None
 
 # ---------------------------------------------------------
-# 3. SKADN CONFIG (Das fehlte!)
+# 3. SKADN & UA (Config)
 # ---------------------------------------------------------
 SKADN_APP_CONFIGS = {"TikTok": 8, "Snapchat": 12, "Facebook": 16, "Google": 20, "Unity": 24}
-
 def get_skadn_value_for_app(app_name):
     for k, v in SKADN_APP_CONFIGS.items(): 
         if k.lower() in app_name.lower(): return v
     return 8
 
-# ---------------------------------------------------------
-# 4. UA MANAGER (DB)
-# ---------------------------------------------------------
 class UserAgentManager:
     def __init__(self):
         self.db_path = "/tmp/user_agents.db"
@@ -85,7 +99,7 @@ class UserAgentManager:
                 row = cur.fetchone()
                 if row and not final_link: final_link = row[0]
                 if save_to_db and incoming_link:
-                    cur.execute("INSERT OR REPLACE INTO agents (device_id, user_agent, tracker_link) VALUES (?, ?, ?)", (device_id, "POCO-M7-Pro-Mode", final_link))
+                    cur.execute("INSERT OR REPLACE INTO agents (device_id, user_agent, tracker_link) VALUES (?, ?, ?)", (device_id, "POCO-Mode", final_link))
                     conn.commit()
         except: pass
         return None, False, final_link
@@ -102,50 +116,55 @@ def extract_id_and_platform_from_link(link):
     return None, None
 
 # ---------------------------------------------------------
-# 5. BLUEPRINT: POCO M7 Pro 5G (Android 15)
+# 4. BLUEPRINT: POCO M7 Pro 5G (Aligned with Log Structure)
 # ---------------------------------------------------------
-def get_poco_blueprint(device_id, app_token, event_token, android_uuid):
+def get_poco_blueprint(device_id, app_token, event_token, android_uuid, app_set_id, push_token):
+    """
+    Kombiniert die technischen Daten des POCO M7 Pro mit der Struktur aus dem Log.
+    """
     now = datetime.datetime.now(datetime.timezone.utc)
-    install_time = (now - datetime.timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
+    # Install: vor ca. 30 Min
+    install_time = (now - datetime.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
     current_time = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
     
+    # BASIS DATEN (POCO M7 Pro 5G / Android 15)
     data = {
+        # Identity
         "app_token": app_token,
         "event_token": event_token,
         "gps_adid": device_id,
         "android_uuid": android_uuid,
+        "google_app_set_id": app_set_id,
+        "push_token": push_token,
         
-        # Device Specs: POCO M7 Pro 5G (Model: 2409FPCC4G)
+        # Device Specs (POCO M7 Pro 5G)
         "device_name": "2409FPCC4G",
-        "device_type": "phone",
+        "device_type": "phone", # Log hatte 'tablet', aber das ist ein Phone
         "device_manufacturer": "Xiaomi",
-        "hardware_name": "2409FPCC4G",
-        
-        # Display
+        "hardware_name": "2409FPCC4G", 
         "display_width": "2400",
         "display_height": "1080",
         "screen_size": "large",
         "screen_format": "long",
-        "screen_density": "xxhdpi",
-        
-        # CPU
+        "screen_density": "xxhdpi", # high/xxhdpi
         "cpu_type": "arm64-v8a", 
         
-        # OS (Android 15 / HyperOS 2)
+        # OS Specs (Android 15)
         "os_name": "android",
         "os_version": "15",
         "api_level": "35",
         "os_build": "OS2.0.1.0.VNQMIXM",
         
-        # Locale & Network
+        # Locale & Net
         "language": "de",
         "country": "DE",
         "mcc": "262",
         "mnc": "02",
-        "connectivity_type": "1",
+        "connectivity_type": "1", # WiFi
+        "offline_mode_enabled": "0",
         
-        # App Info
-        "package_name": "com.yottagames.mafiawar",
+        # App & Adjust Logic
+        "package_name": "com.yottagames.mafiawar", # Aus Config, Fallback
         "app_version": "1.8.181",
         "tracking_enabled": "1",
         "attribution_deeplink": "1",
@@ -154,25 +173,39 @@ def get_poco_blueprint(device_id, app_token, event_token, android_uuid):
         "gps_adid_src": "service",
         "gps_adid_attempt": "1",
         
-        # Session
-        "installed_at": install_time,
+        # Session Metrics (Simuliert)
         "created_at": current_time,
         "sent_at": current_time,
-        "session_count": "1",
+        "session_count": "1", # Erstes Event für uns
         "subsession_count": "1",
+        "event_count": "1",
+        "session_length": "120", # Sekunden
+        "time_spent": "110",
+        "wait_time": "0.0",
+        "wait_total": "0.0",
         "foreground": "1",
-        "offline_mode_enabled": "0"
+        "ui_mode": "1",
+        "retry_count": "0",
+        "first_error": "0",
+        "last_error": "0"
     }
     return data
 
 # ---------------------------------------------------------
-# 6. PAYLOAD GENERATOR
+# 5. PAYLOAD GENERATOR
 # ---------------------------------------------------------
 def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=None, tracker_link=None):
     base_url = "https://app.adjust.com/event"
+    
+    # IDs generieren
     android_uuid = generate_android_uuid(device_id)
-    data = get_poco_blueprint(device_id, app_token, event_token, android_uuid)
+    app_set_id = generate_google_app_set_id(device_id)
+    push_token = generate_push_token() # Zufällig, aber valides Format
+    
+    # Blueprint laden
+    data = get_poco_blueprint(device_id, app_token, event_token, android_uuid, app_set_id, push_token)
 
+    # Link Parsing & Injection
     partner_params_dict = {}
     extracted_ip = None
     
@@ -187,21 +220,30 @@ def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=N
             
             for key, val_list in query_params.items():
                 val = val_list[0]
+                
+                # Partner Params
                 if key not in blocked_keys and key != "gps_adid":
                     partner_params_dict[key] = val
+
+                # Callback ID
                 key_lower = key.lower()
                 if not found_callback_id:
                     for pid in potential_id_keys:
                         if pid in key_lower: found_callback_id = val; break
+
+                # IP
                 if key in ["ip", "device_ip", "user_ip", "ip_address"]: 
                     extracted_ip = val
                     data["ip_address"] = val
+                
+                # Referrer
                 if key == "referrer":
-                    decoded_ref = unquote(val)
-                    data["install_referrer"] = decoded_ref
-                    data["referrer"] = decoded_ref
+                    decoded = unquote(val)
+                    data["install_referrer"] = decoded
+                    data["referrer"] = decoded
         except: pass
     
+    # Injections
     if found_callback_id:
         data["callback_id"] = found_callback_id
     
@@ -214,9 +256,11 @@ def generate_adjust_payload(event_token, app_token, device_id, platform, skadn=N
     return base_url, data, extracted_ip, ts_header
 
 # ---------------------------------------------------------
-# 7. SENDER (POCO Header)
+# 6. SENDER (POCO HEADER)
 # ---------------------------------------------------------
 def send_request_auto_detect(base_url, data_payload, ts_header, platform, spoof_ip=None, proxies=None):
+    
+    # User Agent passend zum POCO M7 Pro
     user_agent = "Mozilla/5.0 (Linux; Android 15; 2409FPCC4G Build/OS2.0.1.0.VNQMIXM; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.102 Mobile Safari/537.36"
     
     headers = {
@@ -233,7 +277,9 @@ def send_request_auto_detect(base_url, data_payload, ts_header, platform, spoof_
         headers["Client-IP"] = spoof_ip
 
     try:
+        # POST Request mit den Daten
         r = requests.post(base_url, data=data_payload, headers=headers, timeout=10, proxies=proxies)
+        
         status = r.status_code
         resp_text = r.text
         
