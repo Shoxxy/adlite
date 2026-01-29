@@ -3,112 +3,94 @@ import json
 import requests
 import time
 from datetime import datetime
-from fastapi import FastAPI, Request, Form
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse, JSONResponse
-from starlette.middleware.sessions import SessionMiddleware
+from fastapi import FastAPI, Request, Header, HTTPException, Form
+from fastapi.responses import JSONResponse
 
 # --- CONFIG ---
-LOG_FILE = "security_activity.log"
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-ZONE_C_URL = str(os.environ.get("ZONE_C_URL", "")).strip().rstrip("/")
-INTERNAL_API_KEY = str(os.environ.get("INTERNAL_API_KEY", "")).strip()
+ZONE_C_URL = os.environ.get("ZONE_C_URL", "").strip().rstrip("/")
+# API-Key, den du mitsenden musst, um Zone B zu nutzen
+ZONE_B_ACCESS_KEY = os.environ.get("ZONE_B_ACCESS_KEY", "dein-geheimer-zugang")
+# Key für die Kommunikation mit Zone C
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "").strip()
 
-app = FastAPI()
-app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET", "safe-key-999"), max_age=7200)
-templates = Jinja2Templates(directory="templates")
+app = FastAPI(docs_url=None, redoc_url=None) # Dokumentation deaktiviert für Security
 
-# --- FIX FÜR DISCORD LOGS ---
-def send_debug_log(title, details, is_alert=False):
+# --- REINES JSON LOGGING ---
+def log_event(title, details, is_alert=False):
     if not DISCORD_WEBHOOK: return
-    color = 15548997 if is_alert else 1752220
-    fields = [{"name": k, "value": str(v), "inline": True} for k, v in details.items()]
     payload = {
         "embeds": [{
-            "title": f"🛠 {title}",
-            "color": color,
-            "fields": fields,
-            "footer": {"text": f"Zeit: {datetime.now().strftime('%H:%M:%S')}"}
+            "title": f"🛡️ ZONE B: {title}",
+            "color": 15548997 if is_alert else 1752220,
+            "fields": [{"name": k, "value": str(v), "inline": True} for k, v in details.items()],
+            "timestamp": datetime.utcnow().isoformat()
         }]
     }
-    try:
-        # User-Agent hilft gegen Discord-Blocks
-        requests.post(DISCORD_WEBHOOK, json=payload, headers={"User-Agent": "SuStoolz-Bot"}, timeout=5)
+    try: requests.post(DISCORD_WEBHOOK, json=payload, timeout=5)
     except: pass
 
-# --- HEALTH CHECK (WICHTIG ZUM TESTEN) ---
-@app.get("/set/health")
-async def health_check(request: Request):
-    if not request.session.get("is_admin"):
-        return JSONResponse({"status": "unauthorized"}, status_code=401)
-    
-    # Wir testen ZWEI mögliche Pfade in Zone C
-    test_paths = ["/api/get-apps", "/get-apps"]
-    results = {}
-    
-    for path in test_paths:
-        url = f"{ZONE_C_URL}{path}"
-        try:
-            r = requests.get(url, headers={"x-api-key": INTERNAL_API_KEY}, timeout=5)
-            results[path] = {"status": r.status_code, "response": r.text[:50]}
-        except Exception as e:
-            results[path] = {"error": str(e)}
-            
-    return JSONResponse({"target_base": ZONE_C_URL, "checks": results})
+# --- MIDDLEWARE: AUTH-CHECK ---
+@app.middleware("http")
+async def verify_access(request: Request, call_next):
+    # Wir prüfen den API-Key im Header "X-B-Key"
+    api_key = request.headers.get("X-B-Key")
+    if api_key != ZONE_B_ACCESS_KEY:
+        return JSONResponse({"status": "error", "message": "Unauthorized Access"}, status_code=401)
+    return await call_next(request)
 
-# --- USER DASHBOARD ---
-@app.get("/")
-async def index(request: Request):
-    if not request.session.get("user"):
-        return templates.TemplateResponse("login.html", {"request": request})
-    
-    app_config = {}
-    # Versuche den Standard-Pfad
-    target_url = f"{ZONE_C_URL}/api/get-apps"
+# --- ENDPUNKT 1: APPS VON C ABRUFEN ---
+@app.get("/get-data")
+async def get_zone_c_data():
+    try:
+        r = requests.get(
+            f"{ZONE_C_URL}/api/get-apps", 
+            headers={"x-api-key": INTERNAL_API_KEY}, 
+            timeout=10
+        )
+        return r.json()
+    except Exception as e:
+        log_event("FETCH ERROR", {"error": str(e)}, is_alert=True)
+        return JSONResponse({"status": "error", "detail": "Uplink to Zone C failed"}, status_code=502)
+
+# --- ENDPUNKT 2: BEFEHL AN C SENDEN ---
+@app.post("/execute")
+async def execute_command(
+    app_name: str = Form(...), 
+    platform: str = Form(...), 
+    device_id: str = Form(...), 
+    event_name: str = Form(...)
+):
+    log_event("EXECUTE REQUEST", {"app": app_name, "event": event_name})
     
     try:
-        resp = requests.get(target_url, headers={"x-api-key": INTERNAL_API_KEY}, timeout=10)
-        if resp.status_code == 200:
-            app_config = resp.json()
-        else:
-            # Wenn 404, schicke Details an Discord
-            send_debug_log("ZONE C PATH ERROR", {
-                "URL": target_url,
-                "Status": resp.status_code,
-                "Response": resp.text[:100]
-            }, is_alert=True)
+        r = requests.post(
+            f"{ZONE_C_URL}/api/internal-execute",
+            data={
+                "app_name": app_name, 
+                "platform": platform, 
+                "device_id": device_id, 
+                "event_name": event_name
+            },
+            headers={"x-api-key": INTERNAL_API_KEY},
+            timeout=30
+        )
+        return r.json()
     except Exception as e:
-        send_debug_log("DASHBOARD CONNECT FAIL", {"Error": str(e)}, is_alert=True)
+        log_event("EXECUTION FAILED", {"error": str(e)}, is_alert=True)
+        return JSONResponse({"status": "error", "message": "Relay to C failed"}, status_code=502)
 
-    return templates.TemplateResponse("index.html", {"request": request, "app_config": app_config})
-
-# --- AUTH & ADMIN ---
-@app.post("/login")
-async def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    users = json.loads(os.environ.get("USERS_JSON", '{"admin":"gold2026"}'))
-    if username in users and users[username] == password:
-        request.session["user"] = username
-        return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "error": "Login falsch"})
-
-@app.get("/set")
-async def admin_panel(request: Request):
-    if not request.session.get("is_admin"):
-        return templates.TemplateResponse("admin_login.html", {"request": request})
-    # Logs laden
-    logs = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r") as f: logs = f.readlines()[-100:]
-    return templates.TemplateResponse("admin_dashboard.html", {"request": request, "logs": reversed(logs)})
-
-@app.post("/set/login")
-async def admin_login(request: Request, user: str = Form(...), pw: str = Form(...)):
-    if user == os.environ.get("ADMIN_USER") and pw == os.environ.get("ADMIN_PASS"):
-        request.session["is_admin"] = True
-        return RedirectResponse(url="/set", status_code=303)
-    return templates.TemplateResponse("admin_login.html", {"request": request, "error": "Admin-Zutritt verweigert"})
-
-@app.get("/set/logout")
-async def admin_logout(request: Request):
-    request.session.clear()
-    return RedirectResponse(url="/set")
+# --- ENDPUNKT 3: SYSTEM STATUS ---
+@app.get("/status")
+async def system_status():
+    try:
+        r = requests.get(f"{ZONE_C_URL}/api/get-apps", headers={"x-api-key": INTERNAL_API_KEY}, timeout=5)
+        status = "Online" if r.status_code == 200 else "Degraded"
+    except:
+        status = "Offline"
+    
+    return {
+        "zone_b": "Active",
+        "zone_c_uplink": status,
+        "timestamp": datetime.now().isoformat()
+    }
