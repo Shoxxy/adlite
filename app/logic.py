@@ -17,7 +17,7 @@ except ImportError:
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
-# --- 1. PROXY & ID HELPERS ---
+# --- 1. PROXY & NETWORK ---
 class AutoProxyEngine:
     def __init__(self): 
         self.cached_proxies = []
@@ -46,30 +46,36 @@ def get_proxy_dict(use_auto=True):
             return {"http": f"http://{p}", "https": f"http://{p}"}
     return None
 
-def generate_android_uuid(device_id):
-    hash_obj = hashlib.md5(device_id.encode())
-    return str(uuid.UUID(hash_obj.hexdigest()))
-
-def generate_google_app_set_id(device_id):
-    seed = device_id + "_appset"
-    hash_obj = hashlib.md5(seed.encode())
+# --- 2. ID GENERATORS ---
+def generate_uuid_from_string(seed_str):
+    """Erzeugt eine deterministische UUID aus einem String"""
+    hash_obj = hashlib.md5(seed_str.encode())
     return str(uuid.UUID(hash_obj.hexdigest()))
 
 def generate_push_token():
+    """Simuliert FCM (Android) oder APNS (iOS) Token"""
     part1 = ''.join(random.choices(string.ascii_letters + string.digits + "-_", k=22))
     part2 = ''.join(random.choices(string.ascii_letters + string.digits + "-_", k=134))
-    return f"{part1}:APA91b{part2}"
+    return f"{part1}:{part2}"
 
-# --- 2. BLUEPRINT POCO M7 ---
-def get_poco_blueprint(device_id, app_token, event_token, android_uuid, app_set_id, push_token):
+# --- 3. BLUEPRINTS ---
+
+def get_poco_blueprint(device_id, app_token, event_token):
+    """ANDROID PROFILE: POCO M7 Pro 5G"""
     now = datetime.now(timezone.utc)
+    # Installation vor zufällig 40-120 Minuten
     install_time = (now - timedelta(minutes=random.randint(40, 120))).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
     current_time = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
     
+    android_uuid = generate_uuid_from_string(device_id)
+    app_set_id = generate_uuid_from_string(device_id + "_appset")
+    
     return {
         "app_token": app_token, "event_token": event_token,
-        "gps_adid": device_id, "android_uuid": android_uuid,
-        "google_app_set_id": app_set_id, "push_token": push_token,
+        "gps_adid": device_id,  # WICHTIG: GAID
+        "android_uuid": android_uuid,
+        "google_app_set_id": app_set_id, 
+        "push_token": generate_push_token(),
         "device_name": "2409FPCC4G", "device_type": "phone",
         "device_manufacturer": "Xiaomi", "hardware_name": "2409FPCC4G", 
         "os_name": "android", "os_version": "15", "api_level": "35",
@@ -77,9 +83,34 @@ def get_poco_blueprint(device_id, app_token, event_token, android_uuid, app_set_
         "mcc": "262", "mnc": "02", "connectivity_type": "1",
         "installed_at": install_time, "created_at": current_time,
         "session_count": "1", "event_count": "1"
-    }
+    }, "Mozilla/5.0 (Linux; Android 15; 2409FPCC4G Build/OS2.0.1.0.VNQMIXM; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.102 Mobile Safari/537.36"
 
-# --- 3. DISCORD & EXECUTE ---
+def get_ios_blueprint(device_id, app_token, event_token):
+    """IOS PROFILE: iPhone 15 Pro (iOS 17.5.1)"""
+    now = datetime.now(timezone.utc)
+    install_time = (now - timedelta(minutes=random.randint(40, 120))).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
+    current_time = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z+0100"
+    
+    idfv = generate_uuid_from_string(device_id + "_idfv")
+    
+    return {
+        "app_token": app_token, "event_token": event_token,
+        "idfa": device_id,  # WICHTIG: IDFA statt gps_adid
+        "idfv": idfv,
+        "push_token": generate_push_token(), # APNS Token Simulation
+        "device_name": "iPhone16,1", # iPhone 15 Pro Modell-ID
+        "device_type": "phone",
+        "device_manufacturer": "Apple", 
+        "os_name": "ios", 
+        "os_version": "17.5.1", 
+        "language": "de", "country": "DE",
+        "mcc": "262", "mnc": "02", "connectivity_type": "1",
+        "installed_at": install_time, "created_at": current_time,
+        "session_count": "1", "event_count": "1",
+        "tracking_enabled": "1" # ATT Opt-In simuliert
+    }, "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+
+# --- 4. DISCORD & EXECUTE ---
 def log_to_discord(title, fields, color="00ff00"):
     if not DISCORD_WEBHOOK_URL: return
     try:
@@ -94,23 +125,30 @@ def log_to_discord(title, fields, color="00ff00"):
 
 def execute_single_request(app_token, event_token, device_id, platform):
     url = "https://app.adjust.com/event"
-    payload = get_poco_blueprint(
-        device_id, app_token, event_token, 
-        generate_android_uuid(device_id), 
-        generate_google_app_set_id(device_id), 
-        generate_push_token()
-    )
     
-    ua = "Mozilla/5.0 (Linux; Android 15; 2409FPCC4G Build/OS2.0.1.0.VNQMIXM; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.102 Mobile Safari/537.36"
-    headers = {'User-Agent': ua, 'Content-Type': 'application/x-www-form-urlencoded', 'Client-SDK': 'android4.38.0'}
+    # 1. Blueprint Auswahl basierend auf Platform
+    if platform.lower() == "ios":
+        payload, ua = get_ios_blueprint(device_id, app_token, event_token)
+        client_sdk = "ios4.38.0"
+    else:
+        # Default Android (POCO)
+        payload, ua = get_poco_blueprint(device_id, app_token, event_token)
+        client_sdk = "android4.38.0"
+    
+    headers = {
+        'User-Agent': ua, 
+        'Content-Type': 'application/x-www-form-urlencoded', 
+        'Client-SDK': client_sdk
+    }
     
     try:
+        # Request senden (mit Proxy)
         r = requests.post(url, data=payload, headers=headers, timeout=15, proxies=get_proxy_dict(True))
         return r.status_code, r.text
     except Exception as e:
         return 0, str(e)
 
-# --- 4. JOB PROCESSOR (CRON) ---
+# --- 5. JOB PROCESSOR (CRON) ---
 def process_job_queue():
     jobs = get_due_jobs()
     if not jobs: return {"status": "idle", "processed": 0}
@@ -128,11 +166,20 @@ def process_job_queue():
             evt_name = list(events.keys())[0]
             evt_token = events[evt_name]
 
-            code, resp = execute_single_request(job["app_token"], evt_token, job["device_id"], job["platform"])
+            # Hier wird nun 'platform' korrekt durchgereicht
+            code, resp = execute_single_request(
+                job["app_token"], 
+                evt_token, 
+                job["device_id"], 
+                job["platform"]
+            )
             
             log_color = "00ff00" if code == 200 else "ff0000"
             log_to_discord(f"⏰ AUTO-EXEC: {evt_name}", {
-                "App": job["app_name"], "Status": code, "Resp": resp[:100]
+                "App": job["app_name"], 
+                "Plat": job["platform"].upper(),
+                "Status": code, 
+                "Resp": resp[:100]
             }, log_color)
 
             del events[evt_name]
