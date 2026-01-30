@@ -1,146 +1,159 @@
 import os
 import json
-import logging
-from fastapi import FastAPI, Request, Form, HTTPException, Depends
+import time
+from datetime import datetime
+from fastapi import FastAPI, Form, Header, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 
-# Importiere lokale Logik und Datenbank
-# Wir gehen davon aus, dass main.py im Ordner "app" liegt und logic.py/database.py daneben.
-from .logic import execute_single_request, process_job_queue
-from .database import init_db, add_job
+# Imports aus unseren Modulen
+try:
+    from app.logic import execute_single_request, process_job_queue, log_to_discord
+    from app.database import init_db, add_job
+except ImportError:
+    from logic import execute_single_request, process_job_queue, log_to_discord
+    from database import init_db, add_job
 
-# --- KONFIGURATION ---
-# Zone C braucht keine Zone_C_URL mehr, da SIE Zone C ist.
+app = FastAPI(title="SuStoolz Zone B Engine")
+
+# Env Vars
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "secure-key-123")
 DATA_FILE = "data_android.json"
+app_data_cache = {}
 
-# Logging Setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ZoneC_Core")
-
-app = FastAPI(title="SuStoolz Zone C Core")
-
-# --- INITIALISIERUNG ---
-@app.on_event("startup")
-def startup_event():
-    init_db()
-    logger.info("Zone C: Database initialized.")
-    # Prüfen ob Data File existiert
-    if not os.path.exists(DATA_FILE):
-        logger.warning(f"WARNUNG: {DATA_FILE} nicht gefunden! Apps können nicht geladen werden.")
-
-# --- HILFSFUNKTIONEN ---
-def load_app_data():
-    """Lädt die data_android.json frisch von der Disk"""
+def load_data():
+    """Lädt die App-Konfigurationen"""
+    global app_data_cache
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+        try:
+            with open(DATA_FILE, 'r') as f:
+                app_data_cache = json.load(f)
+            print(f"Loaded {len(app_data_cache)} apps.")
+        except Exception as e:
+            print(f"DATA LOAD ERROR: {e}")
 
-def verify_api_key(request: Request):
-    """Sichert die API ab, damit nur Zone B Zugriff hat"""
-    key = request.headers.get("x-api-key")
-    if key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-    return key
-
-# --- ROUTEN ---
+@app.on_event("startup")
+async def startup_event():
+    load_data()
+    init_db() # Wichtig: DB initialisieren
 
 @app.get("/")
-def root():
-    return {"status": "Zone C Online", "role": "Execution Engine"}
+def index():
+    return {"status": "Zone B Operational", "mode": "POCO Engine"}
 
 @app.get("/api/get-apps")
-def get_apps(key: str = Depends(verify_api_key)):
-    """
-    Gibt die Liste der Apps und Events an Zone B zurück.
-    Zone B nutzt dies, um das Dropdown-Menü zu füllen.
-    """
-    data = load_app_data()
-    # Wir transformieren die Daten so, dass Zone B sie leicht lesen kann
-    # Format: {"AppName": ["Event1", "Event2"], ...}
-    result = {}
-    for app_name, details in data.items():
-        events = list(details.get("events", {}).keys())
-        result[app_name] = events
+async def get_apps(x_api_key: str = Header(None)):
+    """Gibt die Liste der Apps an Zone A (ohne Tokens)"""
+    if x_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=403)
     
+    # Safe List erstellen
+    safe_list = {}
+    for name, data in app_data_cache.items():
+        if "events" in data:
+            safe_list[name] = list(data["events"].keys())
+            
+    return safe_list
+
+@app.get("/cron")
+async def cron_trigger():
+    """
+    Dieser Endpunkt muss extern (z.B. UptimeRobot) alle 1-5min aufgerufen werden.
+    Er triggert die Abarbeitung der Warteschlange.
+    """
+    result = process_job_queue()
     return result
 
-@app.post("/api/proxy_send") # Anpassen an den Aufruf von Zone B, falls nötig, oder Route in Zone B anpassen
-def receive_execution_order(
-    request: Request,
+@app.post("/api/internal-execute")
+async def internal_execute(
+    x_api_key: str = Header(None),
     mode: str = Form(...),
     app_name: str = Form(...),
     platform: str = Form(...),
     device_id: str = Form(...),
-    event_name: str = Form(None), # Optional, falls "credit_all"
-    key: str = Depends(verify_api_key)
+    event_name: str = Form(None),
+    start_time: str = Form(None), # Format YYYY-MM-DDTHH:MM
+    delay_min: float = Form(0),
+    delay_max: float = Form(0),
+    username: str = Form("System")
 ):
-    """
-    Empfängt den Feuerbefehl von Zone B und führt ihn aus.
-    """
-    data = load_app_data()
-    
-    # 1. Validierung
-    if app_name not in data:
-        return JSONResponse({"success": False, "log_entry": f"<span class='log-ts'>ERR</span> App '{app_name}' unknown in Zone C."}, status_code=404)
-    
-    app_config = data[app_name]
-    app_token = app_config.get("app_token")
-    
-    logger.info(f"Incoming Command: Mode={mode}, App={app_name}, Platform={platform}, ID={device_id}")
+    if x_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
-    # 2. Modus: SINGLE EVENT
+    if app_name not in app_data_cache:
+        return JSONResponse({"status": "error", "message": "App unknown"}, status_code=404)
+
+    target_app_data = app_data_cache[app_name]
+
+    # --- MODE: SINGLE (Sofort) ---
     if mode == "single":
         if not event_name:
-            return JSONResponse({"success": False, "log_entry": "Missing event_name for single mode"}, status_code=400)
+            return {"status": "error", "message": "Missing Event Name"}
         
-        event_token = app_config.get("events", {}).get(event_name)
-        if not event_token:
-            return JSONResponse({"success": False, "log_entry": f"Event '{event_name}' token not found"}, status_code=404)
-        
-        # Führe Request direkt aus (Logik aus logic.py)
-        # Hinweis: execute_single_request muss in logic.py existieren und (status, response_text) zurückgeben
-        try:
-            status_code, response_body = execute_single_request(
-                app_token=app_token,
-                event_token=event_token,
-                gaid=device_id, # logic.py nennt es oft gaid oder device_id
-                platform=platform
-            )
+        events = target_app_data.get("events", {})
+        if event_name not in events:
+            return {"status": "error", "message": "Event Token not found"}
             
-            success = (status_code == 200)
-            log_msg = f"<span class='log-ts'>ACK</span> {app_name} | {event_name} -> {status_code}"
-            if not success:
-                log_msg += f" | {response_body}"
+        # Ausführen
+        code, resp = execute_single_request(
+            target_app_data["app_token"], 
+            events[event_name], 
+            device_id, 
+            platform
+        )
+        
+        # Loggen
+        log_to_discord("SINGLE MANUAL EXEC", {
+            "User": username,
+            "App": app_name, 
+            "Event": event_name,
+            "Status": code
+        }, "00ff00" if code == 200 else "ff0000")
+        
+        return {"success": True, "http_code": code, "server_response": resp}
+
+    # --- MODE: ALL / TIMER (Queue) ---
+    elif mode in ["credit_all", "timer"]:
+        
+        # 1. Startzeit berechnen
+        first_run_ts = time.time() # Standard: Sofort
+        
+        if start_time and start_time.strip():
+            try:
+                # Versuche Datum zu parsen
+                dt = datetime.strptime(start_time, "%Y-%m-%dT%H:%M")
+                first_run_ts = dt.timestamp()
                 
-            return {"success": success, "log_entry": log_msg, "s2s_response": response_body}
+                # Info Log
+                log_to_discord("⏳ JOB SCHEDULED", {
+                    "User": username,
+                    "App": app_name,
+                    "Start": start_time.replace("T", " "),
+                    "Mode": mode
+                }, "ffff00")
+            except:
+                pass # Fallback auf sofort
 
-        except Exception as e:
-            logger.error(f"Execution Error: {e}")
-            return JSONResponse({"success": False, "log_entry": f"<span class='log-ts'>CRIT</span> Internal Error: {str(e)}"})
+        # 2. Events vorbereiten
+        events_dict = target_app_data.get("events", {})
+        if not events_dict:
+            return {"status": "error", "message": "No events configured for this app"}
 
-    # 3. Modus: CREDIT ALL (Sequentiell) oder TIMER
-    elif mode == "credit_all" or mode == "timer":
-        # Hier würden wir die Jobs in die Datenbank schreiben
-        # Für dieses Beispiel implementieren wir die sofortige Rückmeldung, dass der Job angenommen wurde.
+        # 3. In Datenbank speichern
+        success = add_job(
+            app_name, 
+            platform, 
+            device_id, 
+            target_app_data["app_token"], 
+            events_dict, 
+            first_run_ts,
+            delay_min, 
+            delay_max, 
+            username
+        )
         
-        all_events = app_config.get("events", {})
-        
-        # Job in DB eintragen (Beispielhaft, Parameter müssen mit database.py übereinstimmen)
-        # Wir setzen delay_min/max auf defaults wenn nicht übergeben, 
-        # hier vereinfacht, da wir keine separaten Form-Felder im Header abgefangen haben (in main.py Argumenten ergänzen falls nötig)
-        
-        # Hinweis: Um Timer-Argumente zu empfangen, müssen sie in der Funktionssignatur oben ergänzt werden:
-        # delay_min: float = Form(1.0), delay_max: float = Form(5.0) ...
-        
-        return {"success": True, "log_entry": f"<span class='log-ts'>JOB</span> '{mode}' sequence for {len(all_events)} events queued in Zone C."}
+        if success:
+            return {"success": True, "message": "Job in Database queued. Cron will handle execution."}
+        else:
+            return {"success": False, "message": "Database Error"}
 
-    else:
-        return JSONResponse({"success": False, "log_entry": f"Unknown Mode: {mode}"}, status_code=400)
-
-# Endpunkt für den Cronjob/Worker (optional, um Queue manuell zu triggern)
-@app.get("/api/process-queue")
-def trigger_queue(key: str = Depends(verify_api_key)):
-    result = process_job_queue()
-    return result
+    return {"status": "error", "message": "Invalid Mode"}
