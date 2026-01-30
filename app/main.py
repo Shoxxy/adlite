@@ -96,3 +96,30 @@ async def internal_execute(
         return {"success": True, "message": "Job queued in Database." if success else "Database Error"}
 
     return {"status": "error", "message": "Invalid Mode"}
+@app.post("/api/proxy_send")
+async def proxy_send(
+    x_api_key: str = Header(None),
+    mode: str = Form(...),
+    app_name: str = Form(...),
+    platform: str = Form(...),
+    device_id: str = Form(...),
+    event_name: str = Form(None),
+    start_time: str = Form(None),
+    delay_min: float = Form(0),
+    delay_max: float = Form(0),
+    username: str = Form("System")
+):
+    """Proxy endpoint that forwards to internal_execute - used by Zone B GUI"""
+    return await internal_execute(
+        x_api_key=x_api_key,
+        mode=mode,
+        app_name=app_name,
+        platform=platform,
+        device_id=device_id,
+        event_name=event_name,
+        start_time=start_time,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        username=username
+    )
+
